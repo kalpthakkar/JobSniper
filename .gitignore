@@ -1,0 +1,130 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+env_*/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyc
+*.pyo
+
+# ============================================================
+# Virtual Environments
+# ============================================================
+env_jobsniper/
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ============================================================
+# IDE / Editor
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.sublime-project
+.sublime-workspace
+*.code-workspace
+.python-version
+.editorconfig
+
+# ============================================================
+# Project-specific
+# ============================================================
+# Database files (local SQLite)
+data/job_db.db*
+data/job_db.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Configuration with secrets (if stored locally)
+# Note: config.yaml is committed, but local overrides are not
+config.local.yaml
+.env
+.env.local
+*.env
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Browser profiles (Playwright, Puppeteer, etc.)
+tesla_profile/
+google_profile/
+*_profile/
+playwright-cache/
+
+# Proxies file (may contain sensitive data)
+proxies.txt
+
+# OS-specific
+.DS_Store
+Thumbs.db
+.windows-trash
+
+# ============================================================
+# Testing / Coverage
+# ============================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ============================================================
+# Temporary files
+# ============================================================
+*.tmp
+*.bak
+*.swp
+.#*
+*#
+
+# ============================================================
+# Directories (optional - comment out if needed)
+# ============================================================
+# Exclude any scratch/test directories
+/test_*
+/scratch/
+/tmp/
+
+# ============================================================
+# External / Third-party directories
+# ============================================================
+# Web reference documentation and node_modules
+web/reference/
+web/node_modules/
+node_modules/

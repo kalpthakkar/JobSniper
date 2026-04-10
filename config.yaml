@@ -1,0 +1,105 @@
+# ============================================================
+# JOB SNIPER — Master Configuration
+# ============================================================
+
+system:
+  # Max parallel polling threads
+  max_workers: 20
+
+  # NOTE: Polling intervals are now managed by PriorityScheduler with adaptive weighting
+  # HIGH:MID:LOW = 12:3:1 slots per cycle. No fixed intervals — frequencies emerge naturally.
+
+  # IP rotation strategy: none | rotating_proxies | tor | user_agent_rotation
+  ip_strategy: user_agent_rotation
+
+  # Path to proxy list file (one proxy per line: http://user:pass@host:port)
+  proxy_file: proxies.txt   # optional; leave blank to disable
+
+  # Database file path (local SQLite store)
+  db_path: data/job_db.db
+
+  # Log level: DEBUG | INFO | WARNING | ERROR
+  log_level: INFO
+
+  # Request timeout in seconds (increased from 10 to handle slow APIs)
+  request_timeout: 30
+
+  # Max retries per request before marking company as temporarily unavailable
+  max_retries: 3
+
+  # Delay between retries (seconds)
+  retry_delay: 0.5       # urllib3 backoff_factor for 5xx retries. Keep small — large values
+                         # cause thread-blocking: delay = backoff_factor * 2^attempt.
+                         # With 0.5: retries wait 0.5s, 1s, 2s = 3.5s max.
+                         # Old value of 2 caused 2s+4s+8s = 14s blocking per failed request.
+
+  # Google Careers polling
+  google_enabled: true
+  google_cooldown_minutes: 3
+  google_request_timeout: 30
+
+  # Tesla Careers polling
+  tesla_enabled: true
+  tesla_cooldown_minutes: 3
+  tesla_request_timeout: 60
+
+  # Disable 24-hour job filter per ATS type
+  # Set to true to track ALL jobs regardless of publish date (useful for initial baseline)
+  # Set to false (default) to only track jobs published in last 24h (reduces database bloat)
+  disable_24h_filter:
+    greenhouse: false
+    lever: false
+    ashby: false
+    workable: false
+    workday: false
+
+  # Notification channels: console | telegram | webhook
+  notify_channels:
+    - console
+
+  # Telegram bot config (only used if 'telegram' in notify_channels)
+  telegram:
+    bot_token: "YOUR_BOT_TOKEN_HERE"
+    chat_id: "YOUR_CHAT_ID_HERE"
+
+  # Webhook config (only used if 'webhook' in notify_channels)
+  webhook:
+    url: "https://your-webhook-url.com/notify"
+    headers:
+      Content-Type: "application/json"
+
+# ============================================================
+# ATS Endpoint Schemas
+# Each ATS type defines how to build the fetch URL + params
+# ============================================================
+ats_schemas:
+  greenhouse:
+    base_url: "https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs"
+    params:
+      content: "true"
+    method: GET
+
+  ashby:
+    base_url: "https://api.ashbyhq.com/posting-api/job-board/{board_token}"
+    params:
+      includeCompensation: "true"
+    method: GET
+
+  workable:
+    base_url: "https://apply.workable.com/api/v1/widget/accounts/{board_token}"
+    params: {}
+    method: GET
+
+  workday:
+    base_url: "{board_token}"
+    params: {}
+    method: GET
+    timeout: 30
+
+  lever:
+    base_url: "https://api.lever.co/v0/postings/{board_token}"
+    params:
+      mode: "json"
+      limit: "50"
+    method: GET
+    timeout: 30

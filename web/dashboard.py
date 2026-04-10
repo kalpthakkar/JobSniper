@@ -1,0 +1,95 @@
+"""
+web/dashboard.py — Web dashboard for managing companies in Job Sniper.
+"""
+import json
+from pathlib import Path
+
+from flask import Flask, render_template, request, redirect, url_for
+
+from core.config import Config
+from core.database import JobDatabase
+from core.models import ATSType, Priority
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+config = Config(str(PROJECT_ROOT / "config.yaml"))
+app = Flask(
+    __name__,
+    template_folder=str(PROJECT_ROOT / "templates"),
+    static_folder=str(PROJECT_ROOT / "web" / "static"),
+)
+
+db_path = Path(config.db_path)
+if not db_path.is_absolute():
+    db_path = PROJECT_ROOT / db_path
+
+db = JobDatabase(str(db_path))
+
+@app.route('/')
+def index():
+    companies = db.get_companies()
+    ats_types = [ats.value for ats in ATSType]
+    priorities = [p.value for p in Priority]
+    return render_template('index.html', companies=companies, ats_types=ats_types, priorities=priorities, live_reload=True)
+
+@app.route('/add-company', methods=['GET', 'POST'])
+def add_company():
+    ats_types = [ats.value for ats in ATSType]
+    priorities = [p.value for p in Priority]
+    if request.method == 'POST':
+        board_token = request.form.get('board_token', '').strip()
+        ats = request.form.get('ats', '').strip()
+        priority = request.form.get('priority', '').strip()
+        if board_token and ats and priority:
+            db.add_company(board_token, ats, priority)
+        return redirect(url_for('index'))
+
+    return render_template(
+        'add_company.html',
+        ats_types=ats_types,
+        priorities=priorities,
+    )
+
+@app.route('/notify', methods=['GET', 'POST'])
+def notify_settings():
+    config_value = db.get_notification_config() or {}
+    default_config = {
+        "enabled": False,
+        "job_title": {"enabled": False, "rules": []},
+        "company_name": {"enabled": False, "rules": []},
+        "location": {"enabled": False, "rules": []},
+        "blacklist": {"enabled": False, "rules": []},
+    }
+
+    if request.method == 'POST':
+        raw_config = request.form.get('notification_config', '{}')
+        try:
+            parsed = json.loads(raw_config)
+            if isinstance(parsed, dict):
+                db.save_notification_config(parsed)
+        except Exception:
+            pass
+        return redirect(url_for('notify_settings'))
+
+    final_config = {
+        "enabled": config_value.get("enabled", default_config["enabled"]),
+        "job_title": {**default_config["job_title"], **config_value.get("job_title", {})},
+        "company_name": {**default_config["company_name"], **config_value.get("company_name", {})},
+        "location": {**default_config["location"], **config_value.get("location", {})},
+        "blacklist": {**default_config["blacklist"], **config_value.get("blacklist", {})},
+    }
+    return render_template('notify.html', config=final_config)
+
+@app.route('/update/<board_token>', methods=['POST'])
+def update(board_token):
+    ats = request.form['ats']
+    priority = request.form['priority']
+    db.update_company(board_token, ats, priority)
+    return redirect(url_for('index'))
+
+@app.route('/delete/<board_token>')
+def delete(board_token):
+    db.delete_company(board_token)
+    return redirect(url_for('index'))
+
+if __name__ == '__main__':
+    app.run(debug=True)

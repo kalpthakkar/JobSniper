@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Job Sniper Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-mark">JS</span>
+                <div>
+                    <strong>Job Sniper</strong>
+                    <p>Company management & notification rules</p>
+                </div>
+            </div>
+            <nav class="topnav">
+                <a href="{{ url_for('index') }}" class="nav-link{% if request.path == '/' %} active{% endif %}">Companies</a>
+                <a href="{{ url_for('add_company') }}" class="nav-link{% if request.path == '/add-company' %} active{% endif %}">Add Company</a>
+                <a href="{{ url_for('notify_settings') }}" class="nav-link{% if request.path == '/notify' %} active{% endif %}">Notification Rules</a>
+            </nav>
+        </header>
+
+        <main class="content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

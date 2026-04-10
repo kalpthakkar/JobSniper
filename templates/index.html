@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Company Management</h1>
+        <p>Track board tokens, update ATS type and polling priority, or remove companies from monitoring.</p>
+    </div>
+    <a href="{{ url_for('add_company') }}" class="btn btn-secondary btn-no-underline">Add Company</a>
+</div>
+
+<div class="panel">
+    <div class="table-responsive">
+        <table class="company-table">
+            <thead>
+                <tr>
+                    <th>Board Token</th>
+                    <th>ATS</th>
+                    <th>Priority</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for company in companies %}
+                <tr>
+                    <td>{{ company.board_token[:12] }}{% if company.board_token|length > 12 %}...{% endif %}</td>
+                    <td>{{ company.ats.value }}</td>
+                    <td>{{ company.priority.value }}</td>
+                    <td class="actions-cell">
+                        <form action="{{ url_for('update', board_token=company.board_token) }}" method="post" class="inline-form">
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <select name="ats">
+                                    {% for ats in ats_types %}
+                                    <option value="{{ ats }}" {% if ats == company.ats.value %}selected{% endif %}>{{ ats }}</option>
+                                    {% endfor %}
+                                </select>
+                                <select name="priority">
+                                    {% for p in priorities %}
+                                    <option value="{{ p }}" {% if p == company.priority.value %}selected{% endif %}>{{ p }}</option>
+                                    {% endfor %}
+                                </select>
+                                <button type="submit" class="btn btn-sm">Update</button>
+                            </div>
+                        </form>
+                        <a href="{{ url_for('delete', board_token=company.board_token) }}" class="link-danger" onclick="return confirm('Delete this company?')">Delete</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

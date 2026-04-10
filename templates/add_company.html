@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Add Company</h1>
+        <p>Use this form to register a new company board token and ATS source.</p>
+    </div>
+</div>
+
+<div class="panel">
+    <form action="{{ url_for('add_company') }}" method="post" class="form-grid">
+        <label>
+            <span>Board Token / URL</span>
+            <input type="text" name="board_token" placeholder="" required />
+        </label>
+
+        <label>
+            <span>ATS</span>
+            <select name="ats" required>
+                {% for ats in ats_types %}
+                <option value="{{ ats }}">{{ ats }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <label>
+            <span>Priority</span>
+            <select name="priority" required>
+                {% for p in priorities %}
+                <option value="{{ p }}">{{ p }}</option>
+                {% endfor %}
+            </select>
+        </label>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Company</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,57 @@
+# ============================================================
+# Line Ending Normalization
+# ============================================================
+# All text files should use LF (Unix line endings) in the repository
+# Git will automatically convert to platform-specific line endings on checkout
+
+# Auto detect text files and normalize line endings to LF
+* text=auto
+
+# Python files
+*.py text eol=lf
+*.pyw text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Config files
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+
+# Markdown and documentation
+*.md text eol=lf
+*.txt text eol=lf
+*.rst text eol=lf
+
+# JavaScript/TypeScript
+*.js text eol=lf
+*.ts text eol=lf
+*.jsx text eol=lf
+*.tsx text eol=lf
+
+# CSS/SCSS
+*.css text eol=lf
+*.scss text eol=lf
+*.less text eol=lf
+
+# HTML
+*.html text eol=lf
+*.htm text eol=lf
+
+# Binary files (should not have line ending conversion)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite binary
+*.pyc binary
+*.exe binary
+*.dll binary
+*.so binary
