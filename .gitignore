@@ -59,13 +59,6 @@ venv.bak/
 # ============================================================
 # Project-specific
 # ============================================================
-# Database files (local SQLite)
-data/job_db.db*
-data/job_db.json
-*.db
-*.sqlite
-*.sqlite3
-
 # Configuration with secrets (if stored locally)
 # Note: config.yaml is committed, but local overrides are not
 config.local.yaml
