@@ -141,36 +141,28 @@ class TeslaPoller:
     def _fetch_new_job_details(
         self, new_ids: List[str], jobs_list: List[dict]
     ) -> List[Job]:
-        """Fetch detailed information for new jobs and build Job objects."""
+        """Build Job objects from job details in the jobs list."""
         jobs = []
 
-        # Create a mapping of IDs to URLs for quick lookup
-        id_to_url = {str(job.get("id", "")): job.get("apply_url", "") for job in jobs_list}
+        # Create a mapping of IDs to job details
+        id_to_details = {str(job.get("id", "")): job for job in jobs_list}
 
-        # Filter to only IDs we have URLs for
-        job_urls = [id_to_url[job_id] for job_id in new_ids if job_id in id_to_url]
-
-        if not job_urls:
-            logger.warning(f"[Tesla] No URLs found for {len(new_ids)} new jobs")
-            return []
-
-        # Fetch all details in a single browser session (much more efficient!)
-        logger.debug(f"[Tesla] Fetching details for {len(job_urls)} new jobs in batch mode")
-        details_by_url = self.adapter.fetch_job_details_batch(job_urls)
-
-        # Build Job objects from details
-        for job_url, details in details_by_url.items():
+        for job_id in new_ids:
+            details = id_to_details.get(job_id)
             if not details:
-                job_id = self.adapter._extract_job_id(job_url)
-                logger.warning(f"[Tesla] Failed to fetch details for job {job_id}")
+                logger.warning(f"[Tesla] No details found for job {job_id}")
                 continue
 
-            job = self._build_job_from_details(details, job_url)
+            # Build apply URL from title and ID
+            title = details.get("t", "")
+            apply_url = TeslaAdapter._build_apply_url(title, job_id)
+
+            job = self._build_job_from_details(details, apply_url)
             if job:
                 jobs.append(job)
 
         logger.debug(
-            f"[Tesla] Successfully built {len(jobs)} Job objects from {len(details_by_url)} detail fetches"
+            f"[Tesla] Successfully built {len(jobs)} Job objects from {len(new_ids)} new jobs"
         )
         return jobs
 
@@ -184,7 +176,7 @@ class TeslaPoller:
 
             return Job(
                 id=job_id,
-                title=details.get("title", "Untitled"),
+                title=details.get("t", "Untitled"),  # Tesla uses 't' for title
                 company="Tesla",
                 location=details.get("location", ""),
                 department=details.get("department", "") or details.get("jobFamily", ""),

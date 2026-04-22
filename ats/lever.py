@@ -22,6 +22,7 @@ Response shape: a JSON array (not an object):
 """
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional
 
@@ -31,6 +32,11 @@ from core.models import Job, Company
 from core.http_client import HttpClient
 
 logger = logging.getLogger("job_sniper.ats.lever")
+
+# ─────────────────────────────────────────────────────────────────────
+# Rate limiting parameters for Lever
+# ─────────────────────────────────────────────────────────────────────
+REQUEST_DELAY = 0.3  # Delay between successive Lever requests (seconds)
 
 
 def _is_posted_today(created_at_ms: int, disable_filter: bool = False) -> bool:
@@ -51,6 +57,8 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
     """
     Fetch all current open jobs from Lever.
     Returns: (raw_json_text, [job_id_str, ...])
+    
+    Treats ReadTimeoutError as a rate limit signal — allows caller to apply backoff.
     """
     url = schema["base_url"].format(board_token=company.board_token)
     params = schema.get("params", {})
@@ -65,6 +73,12 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
         ids = sorted({str(j.get("id", "")) for j in today_jobs})
         canonical = json.dumps(ids)
         return canonical, ids
+    except requests.exceptions.ReadTimeout as e:
+        # Treat timeout as a rate limit signal
+        # Re-raise as RateLimitError so scheduler applies exponential backoff
+        from ats.ashby import RateLimitError
+        logger.warning(f"[Lever] {company.name} read timeout (treating as rate limit): {e}")
+        raise RateLimitError(f"Read timeout on Lever API: {e}") from e
     except requests.exceptions.RequestException as e:
         logger.error(f"[Lever] Failed to fetch {company.name}: {e}")
         raise
@@ -80,14 +94,25 @@ def extract_new_jobs(
     """
     Fetch and return only jobs not already in seen_ids.
     Canonical function used by the poller.
+    
+    Adds inter-request delays to prevent hammering Lever API.
+    Treats ReadTimeoutError as a rate limit signal.
     """
     url = schema["base_url"].format(board_token=company.board_token)
     params = schema.get("params", {})
     timeout = schema.get("timeout")
 
+    # Add delay before making request to avoid hammering Lever
+    time.sleep(REQUEST_DELAY)
+
     try:
         resp = http.get(url, params=params, timeout=timeout)
         data = resp.json()
+    except requests.exceptions.ReadTimeout as e:
+        # Treat timeout as a rate limit signal
+        from ats.ashby import RateLimitError
+        logger.warning(f"[Lever] {company.name} read timeout in extract_new_jobs (treating as rate limit): {e}")
+        raise RateLimitError(f"Read timeout on Lever API: {e}") from e
     except requests.exceptions.RequestException as e:
         logger.error(f"[Lever] extract_new_jobs failed for {company.name}: {e}")
         return []

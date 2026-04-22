@@ -9,6 +9,7 @@ for `Posted Today` jobs only.
 import json
 import logging
 import re
+import time
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -19,6 +20,20 @@ from core.http_client import HttpClient
 from core.models import Company, Job
 
 logger = logging.getLogger("job_sniper.ats.workday")
+
+# Realistic User-Agent to avoid bot detection
+REALISTIC_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+# Rate limiting: delay between requests (seconds)
+REQUEST_DELAY = 0.5
+PAGINATION_DELAY = 1.0
+
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_BACKOFF = 2  # seconds
 
 
 def _extract_token(html: str) -> Optional[str]:
@@ -85,7 +100,24 @@ def _build_headers(origin_url: str, token: str) -> dict:
         "x-calypso-csrf-token": token,
         "referer": origin_url,
         "origin": origin,
-        "user-agent": "Mozilla/5.0",
+        "user-agent": REALISTIC_USER_AGENT,
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+    }
+
+
+def _build_page_headers() -> dict:
+    """Headers for initial page fetch to mimic real browser."""
+    return {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "User-Agent": REALISTIC_USER_AGENT,
+        "Cache-Control": "max-age=0",
     }
 
 
@@ -96,26 +128,47 @@ def _ensure_path(path: str) -> str:
 
 
 def _fetch_workday_page(http: HttpClient, url: str) -> str:
-    headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    resp = http.get(url, headers=headers)
-    html = resp.text
-
-    if html.strip().startswith("{"):
+    """Fetch Workday page with retry logic and proper headers."""
+    headers = _build_page_headers()
+    
+    for attempt in range(MAX_RETRIES):
         try:
-            payload = json.loads(html)
-        except json.JSONDecodeError:
-            payload = None
+            resp = http.get(url, headers=headers)
+            resp.raise_for_status()
+            html = resp.text
 
-        if isinstance(payload, dict) and payload.get("widget") == "redirect":
-            redirect_url = payload.get("url")
-            if redirect_url:
-                url = _get_origin(url) + redirect_url
-                resp = http.get(url, headers=headers)
-                html = resp.text
+            if html.strip().startswith("{"):
+                try:
+                    payload = json.loads(html)
+                except json.JSONDecodeError:
+                    payload = None
 
-    return html
+                if isinstance(payload, dict) and payload.get("widget") == "redirect":
+                    redirect_url = payload.get("url")
+                    if redirect_url:
+                        url = _get_origin(url) + redirect_url
+                        # Add delay before redirect request
+                        time.sleep(REQUEST_DELAY)
+                        resp = http.get(url, headers=headers)
+                        resp.raise_for_status()
+                        html = resp.text
+
+            return html
+            
+        except requests.exceptions.HTTPError as e:
+            # 403, 500 errors should retry with backoff
+            if e.response.status_code in [403, 500, 503]:
+                if attempt < MAX_RETRIES - 1:
+                    backoff = INITIAL_BACKOFF * (2 ** attempt)
+                    logger.debug(f"[Workday] Rate limited ({e.response.status_code}), retrying in {backoff}s (attempt {attempt+1}/{MAX_RETRIES})")
+                    time.sleep(backoff)
+                    continue
+            raise
+        except requests.exceptions.RequestException:
+            raise
+    
+    raise ValueError(f"Failed to fetch {url} after {MAX_RETRIES} attempts")
+
 
 
 def _fetch_job_details(
@@ -164,6 +217,10 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
                 "searchText": "",
             }
 
+            # Add delay before pagination request to avoid rate limiting
+            if offset > 0:
+                time.sleep(PAGINATION_DELAY)
+            
             res = http.post(api, json_body=payload, headers=headers)
             data = res.json()
             jobs = data.get("jobPostings", []) or []
@@ -225,6 +282,10 @@ def extract_new_jobs(
                 "searchText": "",
             }
 
+            # Add delay before pagination request to avoid rate limiting
+            if offset > 0:
+                time.sleep(PAGINATION_DELAY)
+
             res = http.post(api, json_body=payload, headers=headers)
             data = res.json()
             jobs = data.get("jobPostings", []) or []
@@ -239,6 +300,9 @@ def extract_new_jobs(
                     continue
 
                 external_path = normalized.get("externalPath") or raw.get("externalPath") or ""
+                
+                # Add delay before fetching job details
+                time.sleep(REQUEST_DELAY)
                 details = _fetch_job_details(http, origin, tenant, site, external_path, headers)
                 info = details.get("jobPostingInfo", {})
                 org = details.get("hiringOrganization", {})

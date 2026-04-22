@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Job Sniper Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
 </head>
 <body>
@@ -19,6 +20,8 @@
             <nav class="topnav">
                 <a href="{{ url_for('index') }}" class="nav-link{% if request.path == '/' %} active{% endif %}">Companies</a>
                 <a href="{{ url_for('add_company') }}" class="nav-link{% if request.path == '/add-company' %} active{% endif %}">Add Company</a>
+                <a href="{{ url_for('stats') }}" class="nav-link{% if request.path == '/stats' %} active{% endif %}">Statistics</a>
+                <a href="{{ url_for('settings') }}" class="nav-link{% if request.path == '/settings' %} active{% endif %}">Settings</a>
                 <a href="{{ url_for('notify_settings') }}" class="nav-link{% if request.path == '/notify' %} active{% endif %}">Notification Rules</a>
             </nav>
         </header>

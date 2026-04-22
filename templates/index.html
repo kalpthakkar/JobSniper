@@ -4,9 +4,22 @@
 <div class="page-header">
     <div>
         <h1>Company Management</h1>
-        <p>Track board tokens, update ATS type and polling priority, or remove companies from monitoring.</p>
     </div>
     <a href="{{ url_for('add_company') }}" class="btn btn-secondary btn-no-underline">Add Company</a>
+</div>
+
+<!-- Search Bar -->
+<div class="panel" style="margin-bottom: 1.5rem; padding: 1rem 1.5rem;">
+    <div style="display: flex; align-items: center; gap: 1rem;">
+        <i class="fa-solid fa-magnifying-glass" style="color: #666; font-size: 1.1rem;"></i>
+        <input 
+            type="text" 
+            id="searchInput" 
+            class="search-input" 
+            placeholder="Search by board token or company name..." 
+        />
+        <span id="resultCount" style="color: #666; font-size: 0.9rem; min-width: 80px; text-align: right;"></span>
+    </div>
 </div>
 
 <div class="panel">
@@ -20,34 +33,326 @@
                     <th>Actions</th>
                 </tr>
             </thead>
-            <tbody>
-                {% for company in companies %}
-                <tr>
-                    <td>{{ company.board_token[:12] }}{% if company.board_token|length > 12 %}...{% endif %}</td>
-                    <td>{{ company.ats.value }}</td>
-                    <td>{{ company.priority.value }}</td>
-                    <td class="actions-cell">
-                        <form action="{{ url_for('update', board_token=company.board_token) }}" method="post" class="inline-form">
-                            <div style="display: flex; gap: 8px; align-items: center;">
-                                <select name="ats">
-                                    {% for ats in ats_types %}
-                                    <option value="{{ ats }}" {% if ats == company.ats.value %}selected{% endif %}>{{ ats }}</option>
-                                    {% endfor %}
-                                </select>
-                                <select name="priority">
-                                    {% for p in priorities %}
-                                    <option value="{{ p }}" {% if p == company.priority.value %}selected{% endif %}>{{ p }}</option>
-                                    {% endfor %}
-                                </select>
-                                <button type="submit" class="btn btn-sm">Update</button>
-                            </div>
-                        </form>
-                        <a href="{{ url_for('delete', board_token=company.board_token) }}" class="link-danger" onclick="return confirm('Delete this company?')">Delete</a>
-                    </td>
-                </tr>
-                {% endfor %}
+            <tbody id="companiesTableBody">
+                <!-- Populated by JavaScript -->
             </tbody>
         </table>
     </div>
+    
+    <!-- Pagination Controls -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #eee;">
+        <div style="display: flex; gap: 0.5rem;">
+            <button id="prevBtn" class="btn btn-sm" onclick="previousPage()" disabled>
+                <i class="fa-solid fa-chevron-left"></i> Previous
+            </button>
+            <button id="nextBtn" class="btn btn-sm" onclick="nextPage()">
+                Next <i class="fa-solid fa-chevron-right"></i>
+            </button>
+        </div>
+        <span id="pageInfo" style="color: #666; font-size: 0.9rem;">Page 1</span>
+        <div style="min-width: 100px;"></div>
+    </div>
 </div>
+
+<style>
+    .board-token-cell {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-family: 'Courier New', monospace;
+        font-size: 0.85rem;
+    }
+    
+    .copy-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 100%;
+        padding: 0;
+        cursor: pointer;
+        transition: all 0.2s;
+        flex-shrink: 0;
+        font-size: 0.8rem;
+    }
+
+    .copy-btn:hover {
+        background: #505050;
+        color: white;
+        transform: scale(1.05);
+    }S
+    
+    .copy-btn:active {
+        transform: scale(0.95);
+    }
+    
+    .copy-feedback {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #4caf50;
+        color: white;
+        padding: 0.75rem 1.5rem;
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        z-index: 1000;
+        animation: slideIn 0.3s ease;
+    }
+    
+    @keyframes slideIn {
+        from {
+            transform: translateX(400px);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .search-input {
+        flex: 1; 
+        padding: 0.75rem; 
+        border: 0px !important; 
+        border-radius: 4px; 
+        font-size: 1rem;
+    }
+    
+    .search-input:focus {
+        outline: none;
+    }
+</style>
+
+<script>
+    // ===== DATA INITIALIZATION =====
+    const allCompanies = [
+        {% for company in companies %}
+        {
+            boardToken: '{{ company.board_token }}',
+            ats: '{{ company.ats.value }}',
+            priority: '{{ company.priority.value }}'
+        }{{ "," if not loop.last else "" }}
+        {% endfor %}
+    ];
+    
+    const ATS_TYPES = [
+        {% for ats in ats_types %}'{{ ats }}'{{ "," if not loop.last else "" }}{% endfor %}
+    ];
+    
+    const PRIORITIES = [
+        {% for p in priorities %}'{{ p }}'{{ "," if not loop.last else "" }}{% endfor %}
+    ];
+    
+    // ===== PAGINATION & SEARCH STATE =====
+    let currentPage = 1;
+    const ITEMS_PER_PAGE = 30;
+    let filteredCompanies = [...allCompanies];
+    let searchDebounceTimer = null;
+    
+    // ===== UTILITY: COPY TO CLIPBOARD =====
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            // Show feedback
+            const feedback = document.createElement('div');
+            feedback.className = 'copy-feedback';
+            feedback.textContent = '✓ Copied to clipboard';
+            document.body.appendChild(feedback);
+            
+            setTimeout(() => {
+                feedback.remove();
+            }, 2000);
+        }).catch(() => {
+            alert('Failed to copy to clipboard');
+        });
+    }
+    
+    // Setup copy button listeners
+    function setupCopyButtons() {
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const token = btn.getAttribute('data-token');
+                copyToClipboard(token);
+            });
+        });
+    }
+    
+    // ===== LIVE SEARCH WITH DEBOUNCING =====
+    function setupSearchListener() {
+        const searchInput = document.getElementById('searchInput');
+        
+        searchInput.addEventListener('input', (e) => {
+            // Clear existing timer
+            clearTimeout(searchDebounceTimer);
+            
+            // Set new timer for debounced search
+            searchDebounceTimer = setTimeout(() => {
+                performSearch(e.target.value);
+            }, 300); // 300ms debounce delay
+        });
+    }
+    
+    function performSearch(query) {
+        const lowerQuery = query.toLowerCase().trim();
+        
+        if (!lowerQuery) {
+            // No search query - show all
+            filteredCompanies = [...allCompanies];
+        } else {
+            // Filter by board token or company name (board token contains identifying info)
+            filteredCompanies = allCompanies.filter(company => 
+                company.boardToken.toLowerCase().includes(lowerQuery)
+            );
+        }
+        
+        // Reset to page 1 when search changes
+        currentPage = 1;
+        renderTable();
+        updatePagination();
+        updateResultCount();
+    }
+    
+    // ===== RENDER TABLE =====
+    function renderTable() {
+        const tbody = document.getElementById('companiesTableBody');
+        tbody.innerHTML = '';
+        
+        const start = (currentPage - 1) * ITEMS_PER_PAGE;
+        const end = start + ITEMS_PER_PAGE;
+        const pageCompanies = filteredCompanies.slice(start, end);
+        
+        if (pageCompanies.length === 0) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = '<td colspan="4" style="text-align: center; padding: 2rem; color: #999;">No companies found</td>';
+            tbody.appendChild(tr);
+            return;
+        }
+        
+        pageCompanies.forEach((company) => {
+            const tr = document.createElement('tr');
+            
+            // Build ATS options
+            const atsOptions = ATS_TYPES
+                .map(ats => {
+                    const selected = ats === company.ats ? 'selected' : '';
+                    return `<option value="${ats}" ${selected}>${ats}</option>`;
+                })
+                .join('');
+            
+            // Build Priority options
+            const priorityOptions = PRIORITIES
+                .map(p => {
+                    const selected = p === company.priority ? 'selected' : '';
+                    return `<option value="${p}" ${selected}>${p}</option>`;
+                })
+                .join('');
+            
+            const displayToken = company.boardToken.length > 12 
+                ? company.boardToken.substring(0, 12) + '...' 
+                : company.boardToken;
+            
+            tr.innerHTML = `
+                <td>
+                    <div class="board-token-cell">
+                        <span title="${company.boardToken}">${displayToken}</span>
+                        <button type="button" class="copy-btn" data-token="${company.boardToken}">
+                            <i class="fa-solid fa-copy"></i>
+                        </button>
+                    </div>
+                </td>
+                <td>${company.ats}</td>
+                <td>${company.priority}</td>
+                <td class="actions-cell">
+                    <form method="post" class="inline-form" style="display: flex; gap: 8px; align-items: center;">
+                        <select name="ats">
+                            ${atsOptions}
+                        </select>
+                        <select name="priority">
+                            ${priorityOptions}
+                        </select>
+                        <button type="submit" class="btn btn-sm">Update</button>
+                    </form>
+                    <a href="javascript:void(0)" class="link-danger" onclick="if(confirm('Delete this company?')) window.location.href='${generateDeleteUrl(company.boardToken)}'">Delete</a>
+                </td>
+            `;
+            
+            // Set form action for this company
+            const form = tr.querySelector('form');
+            form.action = generateUpdateUrl(company.boardToken);
+            
+            tbody.appendChild(tr);
+        });
+        
+        // Setup copy button listeners
+        setupCopyButtons();
+    }
+    
+    function generateUpdateUrl(token) {
+        return "{{ url_for('update', board_token='__TOKEN__') }}".replace('__TOKEN__', token);
+    }
+    
+    function generateDeleteUrl(token) {
+        return "{{ url_for('delete', board_token='__TOKEN__') }}".replace('__TOKEN__', token);
+    }
+    
+    // ===== PAGINATION CONTROLS =====
+    function updatePagination() {
+        const totalPages = Math.ceil(filteredCompanies.length / ITEMS_PER_PAGE);
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const pageInfo = document.getElementById('pageInfo');
+        
+        prevBtn.disabled = currentPage === 1;
+        nextBtn.disabled = currentPage >= totalPages || totalPages === 0;
+        
+        pageInfo.textContent = totalPages === 0 
+            ? 'No results' 
+            : `Page ${currentPage} of ${totalPages}`;
+    }
+    
+    function nextPage() {
+        const totalPages = Math.ceil(filteredCompanies.length / ITEMS_PER_PAGE);
+        if (currentPage < totalPages) {
+            currentPage++;
+            renderTable();
+            updatePagination();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }
+    
+    function previousPage() {
+        if (currentPage > 1) {
+            currentPage--;
+            renderTable();
+            updatePagination();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    }
+    
+    // ===== UPDATE RESULT COUNT =====
+    function updateResultCount() {
+        const resultCount = document.getElementById('resultCount');
+        const total = allCompanies.length;
+        const filtered = filteredCompanies.length;
+        
+        if (filtered === total) {
+            resultCount.textContent = `${total} companies`;
+        } else {
+            resultCount.textContent = `${filtered} of ${total}`;
+        }
+    }
+    
+    // ===== INITIALIZATION =====
+    document.addEventListener('DOMContentLoaded', () => {
+        setupSearchListener();
+        renderTable();
+        updatePagination();
+        updateResultCount();
+    });
+</script>
 {% endblock %}

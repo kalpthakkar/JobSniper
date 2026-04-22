@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Adapter Settings</h1>
+        <p>Manage polling adapters in real-time. Changes apply immediately to the running poller.</p>
+    </div>
+</div>
+
+<style>
+    .settings-section {
+        margin-bottom: 32px;
+    }
+    
+    .settings-section h3 {
+        margin: 0 0 12px 0;
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--text);
+    }
+    
+    .settings-section > p {
+        margin: 0 0 18px 0;
+        color: var(--muted);
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+    
+    .settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 16px;
+    }
+    
+    .setting-card {
+        padding: 16px 18px;
+        background: var(--surface-strong);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 60px;
+    }
+    
+    .setting-card:hover {
+        background: #fafbfc;
+        border-color: var(--accent-soft);
+    }
+    
+    .setting-card:active {
+        transform: scale(0.98);
+    }
+    
+    .setting-label {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: 1;
+        cursor: pointer;
+        user-select: none;
+    }
+    
+    .setting-label-text {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: var(--text);
+    }
+    
+    .switch-label {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        cursor: pointer;
+        user-select: none;
+        flex-shrink: 0;
+    }
+    
+    .switch-label input[type="checkbox"] {
+        appearance: none;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        
+        width: 52px;
+        height: 28px;
+        border-radius: 14px;
+        background: #d0dae8;
+        position: relative;
+        outline: none;
+        cursor: pointer;
+        transition: background 0.3s ease;
+        border: none;
+        flex-shrink: 0;
+        padding: 0;
+        margin: 0;
+        overflow: hidden;
+    }
+    
+    .switch-label input[type="checkbox"]::before {
+        content: '';
+        position: absolute;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: white;
+        top: 2px;
+        left: 2px;
+        transition: left 0.3s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    
+    .switch-label input[type="checkbox"]:checked {
+        background: var(--accent);
+    }
+    
+    
+    .switch-label input[type="checkbox"]:focus {
+        box-shadow: 0 0 0 3px rgba(39, 110, 241, 0.2);
+    }
+    
+    .switch-slider {
+        display: none;
+    }
+    
+    .adapter-count {
+        font-size: 0.8rem;
+        color: var(--muted);
+        margin-top: 4px;
+    }
+    
+    @media (max-width: 768px) {
+        .settings-grid {
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        }
+        
+        .setting-card {
+            padding: 14px 16px;
+            min-height: 56px;
+        }
+    }
+    
+    @media (max-width: 480px) {
+        .settings-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<div class="panel">
+    <div class="settings-section">
+        <h3>🔧 ATS Adapters</h3>
+        <p>Enable or disable ATS adapters (Greenhouse, Lever, Workday, etc). Companies using disabled adapters are automatically excluded from polling.</p>
+        <div class="settings-grid">
+            {% for ats in ats_types %}
+            <div class="setting-card">
+                <label class="setting-label">
+                    <span class="setting-label-text">{{ ats|title }}</span>
+                </label>
+                <label class="switch-label">
+                    <input type="checkbox" id="ats-{{ ats }}" {% if ats_enabled.get(ats, True) %}checked{% endif %} />
+                    <span class="switch-slider"></span>
+                </label>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="settings-section">
+        <h3>🏢 Company-Specific Adapters</h3>
+        <p>Enable or disable career pages for specific companies. These operate independently of ATS types and have dedicated pollers.</p>
+        <div class="settings-grid">
+            {% for company in ['google', 'tesla'] %}
+            <div class="setting-card">
+                <label class="setting-label">
+                    <span class="setting-label-text">{{ company|title }} Careers</span>
+                </label>
+                <label class="switch-label">
+                    <input type="checkbox" id="company-{{ company }}" {% if company_enabled and company_enabled.get(company, True) %}checked{% endif %} />
+                    <span class="switch-slider"></span>
+                </label>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// @ts-nocheck
+/* jshint ignore:start */
+/* eslint-disable */
+
+document.addEventListener("DOMContentLoaded", function() {
+    // Helper function to save ATS setting and provide feedback
+    function saveSetting(endpoint, enabled, elementId) {
+        fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: enabled })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Setting saved:", endpoint, data);
+            // Show brief visual feedback
+            const elem = document.getElementById(elementId);
+            if (elem) {
+                elem.style.opacity = "0.7";
+                setTimeout(() => { elem.style.opacity = "1"; }, 200);
+            }
+        })
+        .catch(error => {
+            console.error("Error saving setting:", error);
+            alert("Failed to save setting: " + error);
+        });
+    }
+
+    // ATS adapter toggles - when toggled, all companies using that ATS will be adjusted
+    {% for ats in ats_types %}
+    (function() {
+        const toggle = document.getElementById("ats-{{ ats }}");
+        if (toggle) {
+            toggle.addEventListener("change", function() {
+                saveSetting("/api/settings/ats/{{ ats }}", this.checked, "ats-{{ ats }}");
+            });
+        }
+    })();
+    {% endfor %}
+
+    // Company-specific adapter toggles
+    {% for company in ['google', 'tesla'] %}
+    (function() {
+        const toggle = document.getElementById("company-{{ company }}");
+        if (toggle) {
+            toggle.addEventListener("change", function() {
+                saveSetting("/api/settings/company/{{ company }}", this.checked, "company-{{ company }}");
+            });
+        }
+    })();
+    {% endfor %}
+});
+</script>
+{% endblock %}

@@ -18,8 +18,6 @@ class ATSType(Enum):
     WORKABLE   = "workable"
     WORKDAY    = "workday"
     LEVER      = "lever"
-    GOOGLE     = "google"
-
 
 @dataclass
 class Company:
@@ -28,6 +26,7 @@ class Company:
     board_token: str
     ats: ATSType
     priority: Priority
+    enabled: bool = True
 
     def __hash__(self):
         return hash(self.board_token + self.ats.value)

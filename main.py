@@ -24,6 +24,8 @@ from core.google_poller import GooglePoller
 from core.tesla_poller import TeslaPoller
 from notifications.notifier import Notifier
 
+logger = logging.getLogger("job_sniper")
+
 
 # ─────────────────────────────────────────────────────────────
 # Logging setup
@@ -62,6 +64,35 @@ Examples:
     parser.add_argument("--list",    action="store_true",   help="List all companies in database and exit")
     parser.add_argument("--dashboard", action="store_true", help="Run web dashboard for company management")
     return parser.parse_args()
+
+
+# ─────────────────────────────────────────────────────────────
+# Filter companies by enabled ATS types
+# ─────────────────────────────────────────────────────────────
+def get_enabled_companies(companies: List[Company], db: JobDatabase) -> List[Company]:
+    """
+    Filter companies to only include those with enabled ATS types.
+    Company is included only if:
+    1. Company is enabled AND
+    2. Its ATS type is enabled (settings stored in DB)
+    """
+    enabled_companies = []
+    for company in companies:
+        if not company.enabled:
+            logger.info(f"[FILTER] {company.name} ({company.ats.value}) — disabled (company flag)")
+            continue
+        
+        # Check if this ATS type is enabled in settings
+        ats_setting = db.get_setting(f"ats_{company.ats.value}")
+        is_ats_enabled = ats_setting != "false"  # Default to True if not set
+        
+        if not is_ats_enabled:
+            logger.info(f"[FILTER] {company.name} ({company.ats.value}) — disabled (ATS type disabled)")
+            continue
+        
+        enabled_companies.append(company)
+    
+    return enabled_companies
 
 
 # ─────────────────────────────────────────────────────────────
@@ -130,8 +161,9 @@ def main():
 
     # ------ --list ------
     if args.list:
-        print(f"\nTracked companies ({len(companies)} total):\n")
-        for c in companies:
+        enabled_list = get_enabled_companies(companies, db)
+        print(f"\nTracked companies ({len(enabled_list)} enabled of {len(companies)} total):\n")
+        for c in enabled_list:
             print(f"  [{c.priority.value:4s}] {c.name:30s} | ATS: {c.ats.value:12s} | token: {c.board_token}")
         print()
         sys.exit(0)
@@ -149,6 +181,14 @@ def main():
         sys.exit(0)
 
     # ------ Full monitoring loop ------
+    enabled_companies = get_enabled_companies(companies, db)
+    
+    if not enabled_companies:
+        logger.error("❌ No enabled companies found. Check your ATS settings in the dashboard.")
+        sys.exit(1)
+    
+    logger.info(f"✓ Starting with {len(enabled_companies)} enabled companies (of {len(companies)} total)")
+    
     notifier = Notifier(
         channels=config.notify_channels,
         telegram_cfg=config.telegram,
@@ -156,25 +196,39 @@ def main():
         db=db,
     )
 
-    orchestrator = PollOrchestrator(companies, config, db, http, notifier)
-
-    # Start Google Careers poller
+    # CHANGED: Pass all companies; orchestrator handles ATS filtering internally with live monitoring
+    # Create Google and Tesla pollers (but don't start them yet)
     google_poller = GooglePoller(
         db=db,
         notifier=notifier,
         cooldown_minutes=config.google_cooldown_minutes,
         request_timeout=config.google_request_timeout,
     )
-    google_poller.start()
-
-    # Start Tesla Careers poller
+    
     tesla_poller = TeslaPoller(
         db=db,
         notifier=notifier,
         cooldown_minutes=config.tesla_cooldown_minutes,
         request_timeout=config.tesla_request_timeout,
     )
-    tesla_poller.start()
+    
+    orchestrator = PollOrchestrator(companies, config, db, http, notifier, google_poller, tesla_poller)
+
+    # Start Google and Tesla pollers based on their settings
+    google_enabled = db.get_setting("company_google") != "false"  # Default to True
+    tesla_enabled = db.get_setting("company_tesla") != "false"    # Default to True
+    
+    if google_enabled:
+        google_poller.start()
+        logger.info("✓ Google Careers poller started")
+    else:
+        logger.info("✗ Google Careers poller disabled (can be enabled in settings)")
+    
+    if tesla_enabled:
+        tesla_poller.start()
+        logger.info("✓ Tesla Careers poller started")
+    else:
+        logger.info("✗ Tesla Careers poller disabled (can be enabled in settings)")
 
     try:
         orchestrator.start()

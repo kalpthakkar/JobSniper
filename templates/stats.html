@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>ATS Statistics</h1>
+        <p>Overview of companies grouped by ATS adapter type with priority breakdown.</p>
+    </div>
+</div>
+
+<div class="panel">
+    <table class="stats-table">
+        <thead>
+            <tr>
+                <th>Adapter</th>
+                <th>Status</th>
+                <th>Total Companies</th>
+                <th>🔴 High Priority</th>
+                <th>🟡 Mid Priority</th>
+                <th>🟢 Low Priority</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for stat in ats_stats %}
+            <tr class="{% if stat.total == 0 and stat.get('adapter_type') != 'company' %}empty-row{% endif %}">
+                <td class="ats-name">
+                    <strong>{{ stat.name|title }}</strong>
+                    {% if stat.get('adapter_type') == 'ats' %}
+                        <span class="adapter-badge ats-badge">ATS</span>
+                    {% elif stat.get('adapter_type') == 'company' %}
+                        <span class="adapter-badge company-badge">Company</span>
+                    {% endif %}
+                </td>
+                <td class="status-cell">
+                    {% if stat.is_enabled %}
+                        <span class="badge badge-enabled">✓ Enabled</span>
+                    {% else %}
+                        <span class="badge badge-disabled">✗ Disabled</span>
+                    {% endif %}
+                </td>
+                <td class="total-cell">
+                    <strong>{{ stat.total }}</strong>
+                </td>
+                <td class="high-cell">
+                    {% if stat.get('adapter_type') == 'company' %}
+                        <span class="priority-count zero">—</span>
+                    {% elif stat.high > 0 %}
+                        <span class="priority-count high">{{ stat.high }}</span>
+                    {% else %}
+                        <span class="priority-count zero">—</span>
+                    {% endif %}
+                </td>
+                <td class="mid-cell">
+                    {% if stat.get('adapter_type') == 'company' %}
+                        <span class="priority-count zero">—</span>
+                    {% elif stat.mid > 0 %}
+                        <span class="priority-count mid">{{ stat.mid }}</span>
+                    {% else %}
+                        <span class="priority-count zero">—</span>
+                    {% endif %}
+                </td>
+                <td class="low-cell">
+                    {% if stat.get('adapter_type') == 'company' %}
+                        <span class="priority-count zero">—</span>
+                    {% elif stat.low > 0 %}
+                        <span class="priority-count low">{{ stat.low }}</span>
+                    {% else %}
+                        <span class="priority-count zero">—</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr class="summary-row">
+                <td><strong>Total</strong></td>
+                <td>—</td>
+                <td><strong>{{ (ats_stats|map(attribute='total')|sum) }}</strong></td>
+                <td><strong>{{ (ats_stats|map(attribute='high')|sum) }}</strong></td>
+                <td><strong>{{ (ats_stats|map(attribute='mid')|sum) }}</strong></td>
+                <td><strong>{{ (ats_stats|map(attribute='low')|sum) }}</strong></td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+<style>
+.stats-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+}
+
+.stats-table thead {
+    background-color: #f5f5f5;
+}
+
+.stats-table th {
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+    border-bottom: 2px solid #ddd;
+    font-size: 0.95rem;
+}
+
+.stats-table td {
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+    vertical-align: middle;
+}
+
+.stats-table tbody tr:hover {
+    background-color: #fafafa;
+}
+
+.stats-table tbody tr.empty-row {
+    opacity: 0.6;
+}
+
+.stats-table tbody tr.empty-row td {
+    color: #999;
+}
+
+.ats-name {
+    font-weight: 600;
+    color: #333;
+    min-width: 120px;
+}
+
+.status-cell {
+    text-align: center;
+}
+
+.total-cell {
+    text-align: center;
+    font-size: 1.1rem;
+}
+
+.high-cell, .mid-cell, .low-cell {
+    text-align: center;
+}
+
+.badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.badge-enabled {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.badge-disabled {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.priority-count {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    min-width: 30px;
+    text-align: center;
+}
+
+.priority-count.high {
+    background-color: #ffe5e5;
+    color: #c41e3a;
+}
+
+.priority-count.mid {
+    background-color: #fff4e5;
+    color: #cc7000;
+}
+
+.priority-count.low {
+    background-color: #e5f5e5;
+    color: #1a6b1a;
+}
+
+.priority-count.zero {
+    color: #ccc;
+    font-weight: 400;
+}
+
+.summary-row {
+    background-color: #f9f9f9;
+    border-top: 2px solid #ddd;
+    font-weight: 600;
+}
+
+.summary-row td:first-child {
+    text-align: left;  /* Keep the first column (adapter name) left-aligned */
+}
+
+.summary-row td {
+    text-align: center;
+    border-bottom: 2px solid #ddd;
+    color: #333;
+}
+
+.panel {
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    padding: 20px;
+    background: white;
+}
+
+.adapter-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 6px;
+    font-size: 0.75rem;
+    border-radius: 3px;
+    font-weight: 500;
+}
+
+.ats-badge {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+}
+
+.company-badge {
+    background-color: #e3f2fd;
+    color: #1976d2;
+}
+</style>
+{% endblock %}

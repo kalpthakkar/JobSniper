@@ -134,7 +134,7 @@ def _gql_fetch(company: Company, http: HttpClient) -> Optional[dict]:
     Call Ashby's internal GraphQL endpoint with a minimal field set
     that is confirmed to exist on JobPostingBriefsWithIdsAndTeamId.
     Returns parsed data dict or None on any failure.
-    Raises RateLimitError on 429 (Too Many Requests).
+    Raises RateLimitError on 429 (Too Many Requests) or ReadTimeout (overloaded API).
     """
     payload = {
         "operationName": "ApiJobBoardWithTeams",
@@ -158,6 +158,9 @@ def _gql_fetch(company: Company, http: HttpClient) -> Optional[dict]:
             logger.warning(f"[Ashby/GQL] Null jobBoard for {company.name} — board_token may be wrong")
             return None
         return data
+    except requests.exceptions.ReadTimeout as e:
+        # Treat timeout as a rate limit signal
+        raise RateLimitError(f"Ashby GQL read timeout (overloaded) for {company.name}: {e}")
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 429:
             raise RateLimitError(f"Ashby GQL rate limit (429) for {company.name}")
@@ -172,7 +175,7 @@ def _rest_fetch(company: Company, http: HttpClient) -> Optional[dict]:
     """
     REST posting API — full payload including isRemote, publishedAt, jobUrl.
     Guards against empty / non-JSON body.
-    Raises RateLimitError on 429 (Too Many Requests).
+    Raises RateLimitError on 429 (Too Many Requests) or ReadTimeout (overloaded API).
     """
     url = _REST_URL.format(board_token=company.board_token)
     try:
@@ -188,6 +191,9 @@ def _rest_fetch(company: Company, http: HttpClient) -> Optional[dict]:
             logger.warning(f"[Ashby/REST] Non-JSON body for {company.name}: {body[:100]!r}")
             return None
         return json.loads(body)
+    except requests.exceptions.ReadTimeout as e:
+        # Treat timeout as a rate limit signal
+        raise RateLimitError(f"Ashby REST read timeout (overloaded) for {company.name}: {e}")
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 429:
             raise RateLimitError(f"Ashby REST rate limit (429) for {company.name}")

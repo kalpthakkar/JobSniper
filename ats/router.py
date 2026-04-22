@@ -14,7 +14,6 @@ from core.http_client import HttpClient
 
 # Import each adapter module
 from ats import greenhouse, ashby, workable, lever, workday
-from company.google import google as google_adapter
 
 
 # Map ATS enum value to its module
@@ -24,7 +23,6 @@ _ADAPTERS = {
     ATSType.WORKABLE:   workable,
     ATSType.WORKDAY:    workday,
     ATSType.LEVER:      lever,
-    ATSType.GOOGLE:     google_adapter,
 }
 
 

@@ -194,12 +194,13 @@ def build_weighted_sequence(companies: List["Company"]) -> List[int]:
     After sorting all (position, company_idx): H1 and H2 alternate first,
     L1 sneaks in at position 0 (tied — broken by priority tier then index).
     """
-    if not companies:
+    enabled_companies = [c for c in companies if c.enabled]
+    if not enabled_companies:
         return []
 
     # Build (fractional_position, priority_order, company_idx, slot_idx) tuples
     entries: List[tuple] = []
-    for idx, company in enumerate(companies):
+    for idx, company in enumerate(enabled_companies):
         w = PRIORITY_WEIGHTS[company.priority]
         tier_order = {Priority.HIGH: 0, Priority.MID: 1, Priority.LOW: 2}[company.priority]
         for slot in range(w):

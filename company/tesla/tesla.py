@@ -238,6 +238,8 @@ class TeslaAdapter:
                                     logger.debug(f"[Tesla] Fetched details for job {job_id}")
                                     results[job_url] = data
                                     break
+                                else:
+                                    logger.warning(f"[Tesla] API response for job {job_id} missing 'id' field. Response: {data}")
                             except Exception as e:
                                 logger.debug(
                                     f"[Tesla] Batch fetch attempt {attempt + 1}/5 for job {job_id}: {e}"
@@ -262,11 +264,9 @@ class TeslaAdapter:
 
     @staticmethod
     def _normalize_jobs(jobs_list: List[Dict]) -> List[Dict]:
-        """Normalize job list to standard format."""
+        """Normalize job list to full job details format."""
         return [
-            TeslaAdapter._normalize_job(job)
-            for job in jobs_list
-            if job.get("id")
+            job for job in jobs_list if job.get("id")
         ]
 
     @staticmethod

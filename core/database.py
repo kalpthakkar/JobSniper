@@ -42,13 +42,20 @@ class JobDatabase:
                 CREATE TABLE IF NOT EXISTS companies (
                     board_token TEXT PRIMARY KEY,
                     ats TEXT,
-                    priority TEXT
+                    priority TEXT,
+                    enabled INTEGER DEFAULT 1
                 )
             ''')
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS notification_config (
                     id INTEGER PRIMARY KEY,
                     config_json TEXT
+                )
+            ''')
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
                 )
             ''')
             self.conn.commit()
@@ -162,14 +169,15 @@ class JobDatabase:
     # ------------------------------------------------------------------
     def get_companies(self) -> List[Company]:
         with self._lock:
-            self.cursor.execute("SELECT board_token, ats, priority FROM companies")
+            self.cursor.execute("SELECT board_token, ats, priority, enabled FROM companies")
             rows = self.cursor.fetchall()
             return [
                 Company(
                     name=row[0],  # use board_token as name for now
                     board_token=row[0],
                     ats=ATSType(row[1]),
-                    priority=Priority(row[2])
+                    priority=Priority(row[2]),
+                    enabled=bool(row[3]) if len(row) > 3 else True
                 ) for row in rows
             ]
 
@@ -193,3 +201,24 @@ class JobDatabase:
         with self._lock:
             self.cursor.execute("DELETE FROM companies WHERE board_token=?", (board_token,))
             self.conn.commit()
+
+    def update_company_enabled(self, board_token: str, enabled: bool):
+        with self._lock:
+            self.cursor.execute(
+                "UPDATE companies SET enabled=? WHERE board_token=?",
+                (1 if enabled else 0, board_token)
+            )
+            self.conn.commit()
+
+
+    def get_setting(self, key: str) -> str:
+        with self._lock:
+            self.cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
+            row = self.cursor.fetchone()
+            return row[0] if row else None
+
+    def set_setting(self, key: str, value: str):
+        with self._lock:
+            self.cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+            self.conn.commit()
+

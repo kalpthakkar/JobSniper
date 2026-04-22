@@ -56,11 +56,12 @@ system:
   # Notification channels: console | telegram | webhook
   notify_channels:
     - console
+    - telegram
 
   # Telegram bot config (only used if 'telegram' in notify_channels)
   telegram:
-    bot_token: "YOUR_BOT_TOKEN_HERE"
-    chat_id: "YOUR_CHAT_ID_HERE"
+    bot_token: "8405081173:AAE0YSeRr0ef9476ZLuMAX4eGkxZ1w-Cb04"
+    chat_id: "6663005447"
 
   # Webhook config (only used if 'webhook' in notify_channels)
   webhook:
@@ -78,23 +79,26 @@ ats_schemas:
     params:
       content: "true"
     method: GET
+    timeout: 30
 
   ashby:
     base_url: "https://api.ashbyhq.com/posting-api/job-board/{board_token}"
     params:
       includeCompensation: "true"
     method: GET
+    timeout: 45  # GraphQL can be slow; increased from default
 
   workable:
     base_url: "https://apply.workable.com/api/v1/widget/accounts/{board_token}"
     params: {}
     method: GET
+    timeout: 40  # REST API with generous timeout
 
   workday:
     base_url: "{board_token}"
     params: {}
     method: GET
-    timeout: 30
+    timeout: 45  # Increased from 30 for slow Workday instances
 
   lever:
     base_url: "https://api.lever.co/v0/postings/{board_token}"
@@ -102,4 +106,4 @@ ats_schemas:
       mode: "json"
       limit: "50"
     method: GET
-    timeout: 30
+    timeout: 60  # Lever is slow; increased from 30 to handle latency
