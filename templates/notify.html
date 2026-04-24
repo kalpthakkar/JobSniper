@@ -3,15 +3,88 @@
 {% block content %}
 <div class="page-header">
     <div>
-        <h1>Notification Rules</h1>
-        <p>Enable custom filters to receive notifications only for matching new job posts.</p>
+        <h1>Notification Settings</h1>
+        <p>Configure which notification channels to use and apply custom filters for job alerts.</p>
     </div>
     <div class="status-pill {{ 'pill-on' if config.enabled else 'pill-off' }}">
-        {{ 'Active' if config.enabled else 'Disabled' }}
+        {{ 'Rules Active' if config.enabled else 'Rules Disabled' }}
     </div>
 </div>
 
 <div class="panel">
+    <h2 style="margin-bottom: 20px; font-size: 1.2rem; font-weight: 600;">📢 Notification Channels</h2>
+    <p style="margin-bottom: 18px; color: var(--muted); font-size: 0.9rem;">Select which channels to use for job alerts. Changes apply immediately.</p>
+    
+    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 32px;">
+        <!-- Console Channel -->
+        <div style="padding: 16px 18px; background: var(--surface-strong); border: 1px solid var(--border); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; min-height: 60px;">
+            <label style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer; user-select: none;">
+                <span style="font-size: 0.95rem; font-weight: 500; color: var(--text);">Console (Terminal)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0; cursor: pointer; user-select: none; flex-shrink: 0;">
+                <input type="checkbox" id="channel-console" style="appearance: none; -webkit-appearance: none; -moz-appearance: none; width: 52px; height: 28px; border-radius: 14px; background: #d0dae8; outline: none; cursor: pointer; transition: background 0.3s ease; border: none; flex-shrink: 0; padding: 0; margin: 0; overflow: hidden;" />
+                <span style="display: none;"></span>
+            </label>
+        </div>
+
+        <!-- Telegram Channel -->
+        <div style="padding: 16px 18px; background: var(--surface-strong); border: 1px solid var(--border); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; min-height: 60px;">
+            <label style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer; user-select: none;">
+                <span style="font-size: 0.95rem; font-weight: 500; color: var(--text);">Telegram Bot</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0; cursor: pointer; user-select: none; flex-shrink: 0;">
+                <input type="checkbox" id="channel-telegram" style="appearance: none; -webkit-appearance: none; -moz-appearance: none; width: 52px; height: 28px; border-radius: 14px; background: #d0dae8; outline: none; cursor: pointer; transition: background 0.3s ease; border: none; flex-shrink: 0; padding: 0; margin: 0; overflow: hidden;" />
+                <span style="display: none;"></span>
+            </label>
+        </div>
+
+        <!-- Webhook Channel -->
+        <div style="padding: 16px 18px; background: var(--surface-strong); border: 1px solid var(--border); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; min-height: 60px;">
+            <label style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer; user-select: none;">
+                <span style="font-size: 0.95rem; font-weight: 500; color: var(--text);">Webhook URL</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0; cursor: pointer; user-select: none; flex-shrink: 0;">
+                <input type="checkbox" id="channel-webhook" style="appearance: none; -webkit-appearance: none; -moz-appearance: none; width: 52px; height: 28px; border-radius: 14px; background: #d0dae8; outline: none; cursor: pointer; transition: background 0.3s ease; border: none; flex-shrink: 0; padding: 0; margin: 0; overflow: hidden;" />
+                <span style="display: none;"></span>
+            </label>
+        </div>
+    </div>
+</div>
+
+<style>
+    input[type="checkbox"][style*="width: 52px"] {
+        position: relative !important;
+    }
+
+    input[type="checkbox"][style*="width: 52px"]::before {
+        content: '';
+        position: absolute;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: white;
+        top: 2px;
+        left: 2px;
+        transition: left 0.3s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        display: block;
+    }
+
+    input[type="checkbox"][style*="width: 52px"]:checked {
+        background: var(--accent) !important;
+    }
+
+    input[type="checkbox"][style*="width: 52px"]:checked::before {
+        left: 26px !important;
+    }
+
+    input[type="checkbox"][style*="width: 52px"]:focus {
+        box-shadow: 0 0 0 3px rgba(39, 110, 241, 0.2) !important;
+    }
+</style>
+
+<div class="panel">
+    <h2 style="margin-bottom: 20px; font-size: 1.2rem; font-weight: 600;">🔔 Notification Filter Rules</h2>
     <form id="notify-form" method="post">
         <div class="form-row switch-row">
             <label class="switch-label">
@@ -27,7 +100,7 @@
         <input type="hidden" name="notification_config" id="notification-config" />
 
         <div class="form-actions">
-            <button type="submit" class="btn btn-primary">Save Notification Settings</button>
+            <button type="submit" class="btn btn-primary">Save Notification Rules</button>
         </div>
     </form>
 </div>
@@ -38,4 +111,65 @@
 window.notificationConfig = {{ config | tojson | safe }};
 </script>
 <script src="{{ url_for('static', filename='js/notify.js') }}"></script>
+<script>
+// @ts-nocheck
+/* jshint ignore:start */
+/* eslint-disable */
+
+document.addEventListener("DOMContentLoaded", function() {
+    // Load initial channel states from localStorage (populated by the server on page load)
+    function loadChannelStates() {
+        return {
+            console: localStorage.getItem("notify_channel_console") === "true",
+            telegram: localStorage.getItem("notify_channel_telegram") === "true",
+            webhook: localStorage.getItem("notify_channel_webhook") === "true"
+        };
+    }
+
+    // Initialize channel toggles from database values
+    fetch("/api/notification/channels")
+        .then(response => response.json())
+        .then(data => {
+            if (data.channels) {
+                document.getElementById("channel-console").checked = data.channels.console;
+                document.getElementById("channel-telegram").checked = data.channels.telegram;
+                document.getElementById("channel-webhook").checked = data.channels.webhook;
+            }
+        })
+        .catch(error => console.error("Failed to load notification channels:", error));
+
+    // Helper function to save notification channel and provide feedback
+    function saveChannel(channel, enabled) {
+        fetch("/api/notification/channels", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel: channel, enabled: enabled })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Channel saved:", channel, data);
+            // Show visual feedback
+            const elem = document.getElementById("channel-" + channel);
+            if (elem) {
+                elem.style.opacity = "0.7";
+                setTimeout(() => { elem.style.opacity = "1"; }, 200);
+            }
+        })
+        .catch(error => {
+            console.error("Error saving channel:", error);
+            alert("Failed to save notification channel: " + error);
+        });
+    }
+
+    // Channel toggle listeners
+    ["console", "telegram", "webhook"].forEach(channel => {
+        const toggle = document.getElementById("channel-" + channel);
+        if (toggle) {
+            toggle.addEventListener("change", function() {
+                saveChannel(channel, this.checked);
+            });
+        }
+    });
+});
+</script>
 {% endblock %}

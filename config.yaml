@@ -53,7 +53,9 @@ system:
     workable: false
     workday: false
 
-  # Notification channels: console | telegram | webhook
+  # Notification channels: now managed via the /notify dashboard UI
+  # These values are stored persistently in the database and can be toggled in real-time
+  # Legacy support: this list is used as defaults on first startup
   notify_channels:
     - console
     - telegram

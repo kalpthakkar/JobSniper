@@ -82,6 +82,33 @@ def notify_settings():
     }
     return render_template('notify.html', config=final_config)
 
+@app.route("/api/notification/channels", methods=["GET"])
+def get_notification_channels():
+    """Get current notification channel settings."""
+    channels = {
+        "console": db.get_setting("notify_channel_console") != "false",
+        "telegram": db.get_setting("notify_channel_telegram") != "false",
+        "webhook": db.get_setting("notify_channel_webhook") != "false",
+    }
+    return {"channels": channels, "status": "ok"}
+
+@app.route("/api/notification/channels", methods=["POST"])
+def toggle_notification_channel():
+    """Toggle a notification channel on/off."""
+    data = request.get_json()
+    channel = data.get("channel", "").lower()
+    enabled = data.get("enabled", True)
+    
+    if channel not in ["console", "telegram", "webhook"]:
+        return {"status": "error", "message": "Invalid channel"}, 400
+    
+    key = f"notify_channel_{channel}"
+    value = "true" if enabled else "false"
+    db.set_setting(key, value)
+    saved_value = db.get_setting(key)
+    logger.info(f"[NOTIFICATION] {channel} = {value} (verified: {saved_value})")
+    return {"status": "ok", "channel": channel, "saved": value, "verified": saved_value}
+
 @app.route('/update/<path:board_token>', methods=['POST'])
 def update(board_token):
     ats = request.form['ats']

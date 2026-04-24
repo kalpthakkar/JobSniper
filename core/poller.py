@@ -51,8 +51,8 @@ ALL_ATS_DISAPPEARANCE_THRESHOLD = 3  # For other ATS types
 
 def _compute_settings_hash(db: JobDatabase) -> str:
     """
-    Compute a hash of all ATS enabled/disabled settings and company-specific settings.
-    Used to detect when user toggles an ATS on/off or company adapter on/off.
+    Compute a hash of all ATS, company-specific, and notification settings.
+    Used to detect when user toggles an ATS on/off, company adapter on/off, or notification channel.
     """
     settings = {}
     
@@ -67,6 +67,16 @@ def _compute_settings_hash(db: JobDatabase) -> str:
         key = f"company_{company}"
         value = db.get_setting(key)
         settings[key] = value or "true"  # Default to enabled if not set
+    
+    # Notification channel settings
+    for channel in ["console", "telegram", "webhook"]:
+        key = f"notify_channel_{channel}"
+        value = db.get_setting(key)
+        settings[key] = value or "false"  # Default to disabled if not set
+    
+    # Notification rules enabled flag
+    config_value = db.get_notification_config() or {}
+    settings["notify_rules_enabled"] = str(config_value.get("enabled", False))
     
     settings_json = json.dumps(settings, sort_keys=True)
     return hashlib.md5(settings_json.encode()).hexdigest()
@@ -194,7 +204,7 @@ class PollOrchestrator:
             raise
 
     def _get_current_adapter_settings(self) -> dict:
-        """Get current state of all adapter settings (ATS and company-specific)."""
+        """Get current state of all adapter settings (ATS, company-specific, and notification)."""
         settings = {}
         
         # ATS adapter settings
@@ -208,6 +218,16 @@ class PollOrchestrator:
             key = f"company_{company}"
             value = self.db.get_setting(key)
             settings[key] = value != "false"  # Default to True if not set
+        
+        # Notification channel settings
+        for channel in ["console", "telegram", "webhook"]:
+            key = f"notify_channel_{channel}"
+            value = self.db.get_setting(key)
+            settings[key] = value != "false"  # Default to True if not set
+        
+        # Notification rules enabled flag
+        config_value = self.db.get_notification_config() or {}
+        settings["notify_rules_enabled"] = str(config_value.get("enabled", False))
         
         return settings
 
@@ -241,6 +261,9 @@ class PollOrchestrator:
                     adapter_changes = []
                     
                     for key in current_settings.keys():
+                        if key.startswith("notify"):
+                            continue  # Handle notification settings separately
+                        
                         new_enabled = current_settings[key]
                         old_enabled = old_settings.get(key, True)  # Default to enabled if not in old settings
                         
@@ -256,6 +279,27 @@ class PollOrchestrator:
                             status = "✅ ENABLED" if new_enabled else "❌ DISABLED"
                             logger.info(f"      {status} {adapter_name} ({adapter_type})")
                             adapter_changes.append((adapter_name, adapter_type, new_enabled))
+                    
+                    # Log notification channel changes
+                    notify_channels_changed = False
+                    for channel in ["console", "telegram", "webhook"]:
+                        key = f"notify_channel_{channel}"
+                        new_val = current_settings.get(key, False)
+                        old_val = old_settings.get(key, False)
+                        if new_val != old_val:
+                            if not notify_channels_changed:
+                                logger.info("   📢 Notification channel changes:")
+                                notify_channels_changed = True
+                            status = "✅ ENABLED" if new_val else "❌ DISABLED"
+                            logger.info(f"      {status} {channel.title()}")
+                    
+                    # Log notification rules changes
+                    rules_key = "notify_rules_enabled"
+                    rules_changed = current_settings.get(rules_key, "False") != old_settings.get(rules_key, "False")
+                    if rules_changed:
+                        rules_enabled = current_settings.get(rules_key, "False") == "True"
+                        status = "✅ ENABLED" if rules_enabled else "❌ DISABLED"
+                        logger.info(f"   🔔 Notification rules: {status}")
                     
                     # Handle company-specific adapters (Google, Tesla) — start/stop pollers
                     self._update_company_poller_state(current_settings)

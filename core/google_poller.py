@@ -91,6 +91,15 @@ class GooglePoller:
         record = self.db.get_record(endpoint, "ats")
         seen_ids = record["seen_ids"] if record else []
         all_ids = [job.id for job in jobs]
+        
+        # Debug: check for duplicate IDs in current fetch
+        unique_ids = set(all_ids)
+        if len(unique_ids) != len(all_ids):
+            duplicate_count = len(all_ids) - len(unique_ids)
+            logger.warning(f"[google] ⚠️  Found {duplicate_count} duplicate job IDs in current fetch!")
+            # Use only unique IDs going forward
+            all_ids = sorted(unique_ids)
+            jobs = [job for job in jobs if job.id in unique_ids]  # Keep only one of each ID
 
         # First ever run → seed baseline silently, no alert
         if record is None:
@@ -103,11 +112,18 @@ class GooglePoller:
         # Check for changes
         if set(seen_ids) == set(all_ids):
             # No changes in job IDs
-            logger.debug(f"[google] ✓ Stable job set")
+            logger.debug(f"[google] ✓ Stable job set: {len(all_ids)} jobs")
             return
 
         truly_new_ids = [jid for jid in all_ids if jid not in seen_ids]
         removed_ids = [jid for jid in seen_ids if jid not in all_ids]
+        
+        # Debug log: show counts and hash consistency
+        logger.debug(
+            f"[google] Job set comparison: "
+            f"total={len(all_ids)}, seen={len(seen_ids)}, "
+            f"new={len(truly_new_ids)}, removed={len(removed_ids)}"
+        )
 
         # Notify about new jobs
         if truly_new_ids:

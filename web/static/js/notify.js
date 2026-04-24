@@ -120,6 +120,7 @@ function renderSection(sectionKey, sectionData) {
 
     const footer = document.createElement('div');
     footer.className = 'section-footer';
+    footer.style.marginTop = '1rem';
     const addButton = document.createElement('button');
     addButton.type = 'button';
     addButton.className = 'btn btn-secondary';

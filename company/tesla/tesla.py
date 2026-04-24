@@ -165,27 +165,15 @@ class TeslaAdapter:
         """
         return self.fetch_job_details_batch([job_url]).get(job_url)
 
-    def fetch_job_details_batch(self, job_urls: List[str]) -> Dict[str, Optional[Dict]]:
-        """
-        Fetch detailed information for multiple jobs in a single browser context.
-        This reuses the persistent context (and cookies) across multiple jobs,
-        but navigates to each job URL before fetching (which ensures context is correct).
-        
-        Args:
-            job_urls: List of Tesla job URLs
-            
-        Returns:
-            Dict mapping job_url -> job details (or None if fetch failed)
-        """
-        if not job_urls:
-            return {}
-
-        results = {}
-        headless, args = self._get_browser_args(BrowserMode.HEADLESS)
+    def _fetch_job_details_batch_mode(
+        self, job_urls: List[str], mode: BrowserMode
+    ) -> Dict[str, Optional[Dict]]:
+        """Fetch detailed information for multiple jobs using a specific browser mode."""
+        results = {job_url: None for job_url in job_urls}
+        headless, args = self._get_browser_args(mode)
 
         try:
             with sync_playwright() as p:
-                # Create persistent context once (reused across all job URLs)
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=self.user_data_dir,
                     headless=headless,
@@ -194,32 +182,18 @@ class TeslaAdapter:
                     timeout=self.timeout * 1000,
                 )
 
-                # Fetch details for each job URL in sequence
                 for job_url in job_urls:
-                    results[job_url] = None  # Default to None on failure
-                    
                     try:
                         job_id = self._extract_job_id(job_url)
-                        
-                        # Create fresh page for this job URL
                         page = context.new_page()
-                        
-                        # Navigate to job detail page (critical for context)
                         logger.debug(f"[Tesla] Navigating to job page: {job_url}")
-                        page.goto(
-                            job_url,
-                            wait_until="domcontentloaded",
-                            timeout=90000,
-                        )
-                        
-                        # Human-like behavior before API call
+                        page.goto(job_url, wait_until="domcontentloaded", timeout=90000)
+
                         page.mouse.move(100, 200)
                         page.wait_for_timeout(2000)
                         page.mouse.wheel(0, 500)
                         page.wait_for_timeout(2000)
 
-                        # Retry fetch until data is ready
-                        data = None
                         for attempt in range(5):
                             try:
                                 request_query = f"""
@@ -231,42 +205,53 @@ class TeslaAdapter:
                                         return await res.json();
                                     }}
                                 """
-                                
                                 data = page.evaluate(request_query)
-                                
                                 if data and data.get("id"):
-                                    logger.debug(f"[Tesla] Fetched details for job {job_id}")
+                                    logger.debug(f"[Tesla] Fetched details for job {job_id} ({mode.value})")
                                     results[job_url] = data
                                     break
-                                else:
-                                    logger.warning(f"[Tesla] API response for job {job_id} missing 'id' field. Response: {data}")
+                                logger.debug(
+                                    f"[Tesla] Batch fetch response missing 'id' for job {job_id} ({mode.value}); attempt {attempt+1}"
+                                )
                             except Exception as e:
                                 logger.debug(
-                                    f"[Tesla] Batch fetch attempt {attempt + 1}/5 for job {job_id}: {e}"
+                                    f"[Tesla] Batch fetch attempt {attempt + 1}/5 for job {job_id} ({mode.value}): {e}"
                                 )
 
                             if attempt < 4:
                                 time.sleep(2)
 
                         page.close()
-
                     except Exception as e:
-                        logger.warning(f"[Tesla] Failed to process job URL {job_url}: {e}")
+                        logger.warning(f"[Tesla] Failed to fetch details for job URL {job_url} ({mode.value}): {e}")
 
                 context.close()
                 return results
 
         except Exception as e:
-            logger.warning(f"[Tesla] Batch context initialization failed: {e}")
-            for url in job_urls:
-                results[url] = None
+            logger.warning(f"[Tesla] Batch context initialization failed ({mode.value}): {e}")
             return results
 
+    def fetch_job_details_batch(self, job_urls: List[str]) -> Dict[str, Optional[Dict]]:
+        """Fetch detailed information for multiple jobs in a single browser context."""
+        if not job_urls:
+            return {}
+
+        for mode in [BrowserMode.HEADLESS, BrowserMode.HEADED]:
+            results = self._fetch_job_details_batch_mode(job_urls, mode)
+            if any(value is not None for value in results.values()):
+                return results
+            logger.warning(f"[Tesla] No valid job detail payloads in {mode.value} mode; falling back")
+            time.sleep(1)
+
+        return results
     @staticmethod
     def _normalize_jobs(jobs_list: List[Dict]) -> List[Dict]:
-        """Normalize job list to full job details format."""
+        """Normalize job list to standard format with IDs and apply URLs."""
         return [
-            job for job in jobs_list if job.get("id")
+            TeslaAdapter._normalize_job(job)
+            for job in jobs_list
+            if job.get("id")
         ]
 
     @staticmethod

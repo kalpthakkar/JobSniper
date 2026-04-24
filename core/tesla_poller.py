@@ -11,6 +11,7 @@ import threading
 import time
 from typing import List, Optional
 
+from bs4 import BeautifulSoup
 from core.database import JobDatabase
 from core.models import Job
 from notifications.notifier import Notifier
@@ -141,21 +142,32 @@ class TeslaPoller:
     def _fetch_new_job_details(
         self, new_ids: List[str], jobs_list: List[dict]
     ) -> List[Job]:
-        """Build Job objects from job details in the jobs list."""
+        """Fetch detailed metadata for new Tesla jobs and build Job objects."""
         jobs = []
 
-        # Create a mapping of IDs to job details
-        id_to_details = {str(job.get("id", "")): job for job in jobs_list}
+        id_to_url = {
+            str(job.get("id", "")): job.get("apply_url", "")
+            for job in jobs_list
+        }
+
+        job_urls = [id_to_url[job_id] for job_id in new_ids if id_to_url.get(job_id)]
+        if not job_urls:
+            logger.warning("[Tesla] No apply URLs found for new jobs")
+            return []
+
+        logger.debug(f"[Tesla] Fetching details for {len(job_urls)} new job(s)")
+        details_by_url = self.adapter.fetch_job_details_batch(job_urls)
 
         for job_id in new_ids:
-            details = id_to_details.get(job_id)
-            if not details:
-                logger.warning(f"[Tesla] No details found for job {job_id}")
+            apply_url = id_to_url.get(job_id)
+            if not apply_url:
+                logger.warning(f"[Tesla] No URL available for new job {job_id}")
                 continue
 
-            # Build apply URL from title and ID
-            title = details.get("t", "")
-            apply_url = TeslaAdapter._build_apply_url(title, job_id)
+            details = details_by_url.get(apply_url)
+            if not details:
+                logger.warning(f"[Tesla] No details found for job {job_id} at {apply_url}")
+                continue
 
             job = self._build_job_from_details(details, apply_url)
             if job:
@@ -174,20 +186,32 @@ class TeslaPoller:
             if not job_id:
                 return None
 
+            title = details.get("title") or details.get("t") or "Untitled"
+            location = details.get("location") or ""
+            department = (
+                details.get("department")
+                or details.get("jobFamily")
+                or details.get("subWorkerType")
+                or ""
+            )
+            compensation = details.get("jobCompensationAndBenefits") or details.get("salary") or None
+
+            # Parse HTML compensation to readable text
+            if compensation and isinstance(compensation, str) and '<' in compensation:
+                soup = BeautifulSoup(compensation, 'html.parser')
+                # Extract text, clean up extra whitespace
+                compensation = ' '.join(soup.get_text().split())
+
             return Job(
                 id=job_id,
-                title=details.get("t", "Untitled"),  # Tesla uses 't' for title
+                title=title,
                 company="Tesla",
-                location=details.get("location", ""),
-                department=details.get("department", "") or details.get("jobFamily", ""),
+                location=location,
+                department=department,
                 url=apply_url,
                 posted_at=None,  # Tesla doesn't provide publish date
-                remote=(
-                    "remote" in details.get("location", "").lower()
-                    if details.get("location")
-                    else False
-                ),
-                salary=None,  # Tesla doesn't include salary in job listing
+                remote=("remote" in location.lower() if location else False),
+                salary=compensation,
                 raw=details,
             )
         except Exception as e:

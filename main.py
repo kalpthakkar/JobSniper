@@ -189,8 +189,22 @@ def main():
     
     logger.info(f"✓ Starting with {len(enabled_companies)} enabled companies (of {len(companies)} total)")
     
+    # Initialize notification channel settings from config (if not already set)
+    # This allows the UI to toggle channels in real-time
+    for channel in config.notify_channels:
+        setting_key = f"notify_channel_{channel}"
+        if db.get_setting(setting_key) is None:
+            db.set_setting(setting_key, "true")  # Default to enabled if not set
+    
+    # Ensure all channels have a setting (even if not in config)
+    for channel in ["console", "telegram", "webhook"]:
+        setting_key = f"notify_channel_{channel}"
+        if db.get_setting(setting_key) is None:
+            # Default based on whether it's in config
+            should_enable = channel in config.notify_channels
+            db.set_setting(setting_key, "true" if should_enable else "false")
+    
     notifier = Notifier(
-        channels=config.notify_channels,
         telegram_cfg=config.telegram,
         webhook_cfg=config.webhook,
         db=db,
