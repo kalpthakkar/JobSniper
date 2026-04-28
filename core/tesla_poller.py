@@ -14,6 +14,7 @@ from typing import List, Optional
 from bs4 import BeautifulSoup
 from core.database import JobDatabase
 from core.models import Job
+from core.description_parser import parse_html_description
 from notifications.notifier import Notifier
 from company.tesla.tesla import TeslaAdapter
 
@@ -126,8 +127,8 @@ class TeslaPoller:
         if truly_new_ids:
             logger.info(f"[Tesla] 🚨 {len(truly_new_ids)} NEW job(s)!")
             new_jobs = self._fetch_new_job_details(truly_new_ids, jobs_list)
-            if new_jobs:
-                self.notifier.notify(new_jobs)
+            logger.info(f"[Tesla] [{len(new_jobs)}/{len(truly_new_ids)}] jobs successfully fetched")
+            self.notifier.notify(new_jobs)
 
         if confirmed_removed:
             logger.info(
@@ -179,6 +180,51 @@ class TeslaPoller:
         return jobs
 
     @staticmethod
+    def _build_tesla_description(details: dict) -> Optional[str]:
+        """
+        Build complete job description from Tesla job details.
+        
+        Assembles: What to Expect + What You'll Do + What You'll Bring + Compensation and Benefits
+        
+        Each section is parsed from HTML to plain text.
+        """
+        parts = []
+        
+        # Part 1: What to Expect (jobDescription)
+        job_description = details.get("jobDescription", "")
+        if job_description and job_description.strip():
+            parsed = parse_html_description(job_description)
+            if parsed:
+                parts.append(f"What to Expect:\n{parsed}")
+        
+        # Part 2: What You'll Do (jobResponsibilities)
+        job_responsibilities = details.get("jobResponsibilities", "")
+        if job_responsibilities and job_responsibilities.strip():
+            parsed = parse_html_description(job_responsibilities)
+            if parsed:
+                parts.append(f"What You'll Do:\n{parsed}")
+        
+        # Part 3: What You'll Bring (jobRequirements)
+        job_requirements = details.get("jobRequirements", "")
+        if job_requirements and job_requirements.strip():
+            parsed = parse_html_description(job_requirements)
+            if parsed:
+                parts.append(f"What You'll Bring:\n{parsed}")
+        
+        # Part 4: Compensation and Benefits (jobCompensationAndBenefits) | Already included in compensation part - no need to repeat in job-description.
+        # job_comp_benefits = details.get("jobCompensationAndBenefits", "")
+        # if job_comp_benefits and job_comp_benefits.strip():
+        #     parsed = parse_html_description(job_comp_benefits)
+        #     if parsed:
+        #         parts.append(f"Compensation and Benefits:\n{parsed}")
+        
+        # Assemble final description
+        if parts:
+            return "\n\n".join(parts)
+        
+        return None
+
+    @staticmethod
     def _build_job_from_details(details: dict, apply_url: str) -> Optional[Job]:
         """Build a Job object from Tesla job details."""
         try:
@@ -212,6 +258,7 @@ class TeslaPoller:
                 posted_at=None,  # Tesla doesn't provide publish date
                 remote=("remote" in location.lower() if location else False),
                 salary=compensation,
+                description=TeslaPoller._build_tesla_description(details),
                 raw=details,
             )
         except Exception as e:

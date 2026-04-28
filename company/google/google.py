@@ -6,7 +6,8 @@ with pagination. It extracts job IDs, titles, locations, and other metadata.
 """
 import json
 import logging
-from typing import Dict, List, Optional
+import math
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -23,6 +24,7 @@ class GoogleAdapter:
 
     def __init__(self, timeout: int = 10):
         self.timeout = timeout
+        logger.info(f"[google] Initializing GoogleAdapter with timeout={timeout}s")
         self.session = requests.Session()
         # Set headers to mimic a browser
         self.session.headers.update({
@@ -38,14 +40,24 @@ class GoogleAdapter:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         })
 
-    def fetch_page_html(self, page: int) -> Optional[str]:
-        """Fetch HTML content for a specific page number."""
+    def fetch_page_html(self, page: int, session: Optional[requests.Session] = None) -> Optional[str]:
+        """Fetch HTML content for a specific page number.
+        
+        Args:
+            page: Page number to fetch
+            session: Optional session object. If None, uses self.session.
+        """
         url = f"{self.BASE_URL}?page={page}"
+        fetch_session = session if session is not None else self.session
         try:
-            logger.debug(f"[google] Fetching page {page}: {url}")
-            response = self.session.get(url, timeout=self.timeout)
+            logger.debug(f"[google] HTTP GET {url} (timeout={self.timeout}s)")
+            response = fetch_session.get(url, timeout=self.timeout)
             response.raise_for_status()
+            logger.debug(f"[google] HTTP 200 — got {len(response.text)} bytes from page {page}")
             return response.text
+        except requests.Timeout as e:
+            logger.error(f"[google] TIMEOUT on page {page} after {self.timeout}s: {e}")
+            return None
         except requests.RequestException as e:
             logger.warning(f"[google] Failed to fetch page {page}: {e}")
             return None
@@ -102,9 +114,49 @@ class GoogleAdapter:
 
         return jobs
 
-    def fetch_jobs_page(self, page: int) -> List[Dict]:
-        """Fetch and parse jobs from a specific page."""
-        html = self.fetch_page_html(page)
+    def extract_pagination_info(self, html: str) -> Optional[Tuple[int, int]]:
+        """Extract total jobs and pages from pagination div.
+        
+        Returns: (jobs_per_page, total_jobs) or None if not found
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        pagination_div = soup.select_one('div[jsname="uEp2ad"]')
+        
+        if not pagination_div:
+            logger.warning("[google] Could not find pagination div")
+            return None
+        
+        pagination_text = pagination_div.get_text(strip=True)
+        logger.debug(f"[google] Pagination text: {pagination_text}")
+        
+        try:
+            parts = pagination_text.split(' ')
+            if len(parts) < 3:
+                return None
+            
+            range_part = parts[0]
+            if '‑' in range_part:
+                jobs_per_page = int(range_part.split('‑')[1])
+            elif '-' in range_part:
+                jobs_per_page = int(range_part.split('-')[1])
+            else:
+                return None
+            
+            total_jobs = int(parts[-1])
+            logger.info(f"[google] Pagination: {jobs_per_page} jobs/page, {total_jobs} total")
+            return (jobs_per_page, total_jobs)
+        except (ValueError, IndexError) as e:
+            logger.warning(f"[google] Error parsing pagination: {e}")
+            return None
+
+    def fetch_jobs_page(self, page: int, session: Optional[requests.Session] = None) -> List[Dict]:
+        """Fetch and parse jobs from a specific page.
+        
+        Args:
+            page: Page number to fetch
+            session: Optional session object for parallel worker use
+        """
+        html = self.fetch_page_html(page, session=session)
         if not html:
             return []
         return self.extract_jobs(html)

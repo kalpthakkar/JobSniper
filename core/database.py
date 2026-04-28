@@ -150,16 +150,88 @@ class JobDatabase:
             row = self.cursor.fetchone()
             if row and row[0]:
                 try:
-                    return json.loads(row[0])
+                    config = json.loads(row[0])
+                    # Automatically migrate old single blacklist to 3 category-specific blacklists
+                    self._migrate_blacklist_structure(config)
+                    return config
                 except json.JSONDecodeError:
                     return {}
         return {}
+    
+    def _migrate_blacklist_structure(self, config: dict) -> bool:
+        """Migrate old single blacklist to 3 category-specific blacklists if needed."""
+        # Check if we have the old single blacklist structure
+        has_old_blacklist = "blacklist" in config and "blacklist_job_title" not in config
+        
+        if not has_old_blacklist:
+            return False  # Already migrated or doesn't exist
+        
+        old_blacklist = config.pop("blacklist", {})
+        rules = old_blacklist.get("rules", [])
+        enabled = old_blacklist.get("enabled", False)
+        
+        # Create 3 independent copies of the old blacklist
+        config["blacklist_job_title"] = {
+            "enabled": enabled,
+            "rules": rules.copy() if rules else []
+        }
+        config["blacklist_company_name"] = {
+            "enabled": enabled,
+            "rules": rules.copy() if rules else []
+        }
+        config["blacklist_location"] = {
+            "enabled": enabled,
+            "rules": rules.copy() if rules else []
+        }
+        
+        # Save the migrated config back to database
+        self.save_notification_config(config)
+        return True
 
     def save_notification_config(self, config: dict):
         config_json = json.dumps(config)
         with self._lock:
             self.cursor.execute(
                 "INSERT OR REPLACE INTO notification_config (id, config_json) VALUES (1, ?)",
+                (config_json,)
+            )
+            self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # User Preferences
+    # ------------------------------------------------------------------
+    def get_preferences(self) -> dict:
+        """
+        Get user job preferences (clearance, salary range, experience, etc).
+        
+        Returns:
+            Dict with preference keys: access_restriction, etc.
+        """
+        with self._lock:
+            self.cursor.execute(
+                "SELECT config_json FROM notification_config WHERE id = 2"
+            )
+            row = self.cursor.fetchone()
+            if row and row[0]:
+                try:
+                    return json.loads(row[0])
+                except json.JSONDecodeError:
+                    return {}
+        return {
+            "access_restriction": "no_preference"  # Default: no preference
+        }
+
+    def save_preferences(self, preferences: dict):
+        """
+        Save user job preferences to database.
+        
+        Args:
+            preferences: Dict with preference keys
+        """
+        config_json = json.dumps(preferences)
+        with self._lock:
+            self.cursor.execute(
+                "INSERT OR REPLACE INTO notification_config (id, config_json) VALUES (2, ?)",
                 (config_json,)
             )
             self.conn.commit()

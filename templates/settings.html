@@ -171,7 +171,7 @@
         <h3>🏢 Company-Specific Adapters</h3>
         <p>Enable or disable career pages for specific companies. These operate independently of ATS types and have dedicated pollers.</p>
         <div class="settings-grid">
-            {% for company in ['google', 'tesla'] %}
+            {% for company in ['google', 'tesla', 'apple', 'microsoft'] %}
             <div class="setting-card">
                 <label class="setting-label">
                     <span class="setting-label-text">{{ company|title }} Careers</span>
@@ -230,7 +230,7 @@ document.addEventListener("DOMContentLoaded", function() {
     {% endfor %}
 
     // Company-specific adapter toggles
-    {% for company in ['google', 'tesla'] %}
+    {% for company in ['google', 'tesla', 'apple', 'microsoft'] %}
     (function() {
         const toggle = document.getElementById("company-{{ company }}");
         if (toggle) {

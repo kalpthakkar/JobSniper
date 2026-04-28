@@ -104,6 +104,371 @@
         </div>
     </form>
 </div>
+
+<style>
+    /* Notification Rules Section Styling */
+    .rules-section {
+        margin-bottom: 2.5rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0;
+        overflow: hidden;
+    }
+
+    .section-header {
+        display: flex !important;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1.2rem 1.5rem;
+        background: var(--surface-strong);
+        border-bottom: 1px solid var(--border);
+        gap: 1rem;
+        margin-bottom: 0px;
+    }
+
+    .section-header > div {
+        flex: 1;
+    }
+
+    .section-header h2 {
+        margin: 0 0 0.3rem 0 !important;
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--text);
+    }
+
+    .section-header p {
+        margin: 0;
+        font-size: 0.85rem;
+        color: var(--muted);
+    }
+
+    .section-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-shrink: 0;
+    }
+
+    /* Search and Pagination Controls */
+    .rules-controls {
+        padding: 1rem 1.5rem;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .search-input-wrapper {
+        flex: 1;
+        min-width: 200px;
+        position: relative;
+    }
+
+    .search-input-wrapper input {
+        width: 100%;
+        padding: 0.6rem 0.9rem 0.6rem 2.3rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 0.9rem;
+        background: var(--surface-strong);
+        color: var(--text);
+        outline: none;
+        transition: border-color 0.2s;
+    }
+
+    .search-input-wrapper input:focus {
+        border-color: var(--accent);
+    }
+
+    .search-input-wrapper input::placeholder {
+        color: var(--muted);
+    }
+
+    .search-icon {
+        position: absolute;
+        left: 0.8rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--muted);
+        pointer-events: none;
+        font-size: 0.95rem;
+    }
+
+    .rules-counter {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.8rem;
+        background: var(--surface-strong);
+        border-radius: 6px;
+        font-size: 0.9rem;
+        color: var(--muted);
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+
+    .rules-counter strong {
+        color: var(--text);
+        font-weight: 600;
+    }
+
+    /* Rules List Container */
+    .rules-list-container {
+        padding: 0 1.5rem;
+        min-height: 200px;
+        max-height: 400px;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .rules-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1rem 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.8rem;
+    }
+
+    .rules-list::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .rules-list::-webkit-scrollbar-track {
+        background: var(--surface);
+    }
+
+    .rules-list::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 3px;
+    }
+
+    .rules-list::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
+    }
+
+    /* Empty State */
+    .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        text-align: center;
+        color: var(--muted);
+    }
+
+    .empty-state-icon {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+        opacity: 0.5;
+    }
+
+    .empty-state p {
+        margin: 0;
+        font-size: 0.95rem;
+    }
+
+    /* Rule Row */
+    .rule-row {
+        display: grid;
+        grid-template-columns: 1fr 140px 140px 90px;
+        gap: 0.8rem;
+        align-items: center;
+        padding: 0.8rem;
+        margin-right: 1%;
+        background: var(--surface-strong);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        transition: all 0.2s;
+    }
+
+    .rule-row:hover {
+        border-color: var(--accent);
+        background: var(--surface);
+    }
+
+    .rule-row input,
+    .rule-row select {
+        padding: 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-size: 0.85rem;
+        background: var(--surface);
+        color: var(--text);
+        font-family: inherit;
+    }
+
+    .rule-row input:focus,
+    .rule-row select:focus {
+        outline: none;
+        border-color: none;
+        /* box-shadow: 0 0 0 3px rgba(39, 110, 241, 0.1); */
+    }
+
+    .rule-value {
+        min-width: 0;
+    }
+
+    .rule-match {
+        cursor: pointer;
+    }
+
+    .toggle-label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+        font-size: 0.85rem;
+    }
+
+    .toggle-label input[type="checkbox"] {
+        cursor: pointer;
+        width: auto;
+    }
+
+    .btn.btn-secondary {
+        padding: 0.4rem 0.8rem;
+        font-size: 0.8rem;
+        height: fit-content;
+    }
+
+    /* Pagination Controls */
+    .pagination-controls {
+        padding: 1rem 1.5rem;
+        background: var(--surface-strong);
+        border-top: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 0.8rem;
+    }
+
+    .pagination-info {
+        font-size: 0.9rem;
+        color: var(--muted);
+    }
+
+    .pagination-info strong {
+        color: var(--text);
+        font-weight: 600;
+    }
+
+    .pagination-buttons {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .btn-pagination {
+        padding: 0.5rem 0.8rem;
+        font-size: 0.85rem;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .btn-pagination:hover:not(:disabled) {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: white;
+    }
+
+    .btn-pagination:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    .page-indicator {
+        padding: 0 0.5rem;
+        font-size: 0.85rem;
+        color: var(--text);
+        font-weight: 500;
+    }
+
+    /* Add Rule Button */
+    .add-rule-button-container {
+        padding: 0.8rem 1.5rem;
+        background: var(--surface);
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: center;
+    }
+
+    .btn-add-rule {
+        padding: 0.6rem 1.2rem;
+        font-size: 0.9rem;
+        border-radius: 6px;
+    }
+
+    /* Disabled State */
+    .rules-section.disabled .rules-list,
+    .rules-section.disabled .rules-controls,
+    .rules-section.disabled .pagination-controls,
+    .rules-section.disabled .add-rule-button-container {
+        opacity: 0.5;
+        pointer-events: none;
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+        .rule-row {
+            grid-template-columns: 1fr 120px 120px 80px;
+        }
+
+        .rules-controls {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .search-input-wrapper {
+            min-width: auto;
+        }
+
+        .rules-counter {
+            width: 100%;
+            justify-content: center;
+        }
+    }
+
+    @media (max-width: 640px) {
+        .rule-row {
+            grid-template-columns: 1fr 80px;
+            gap: 0.5rem;
+        }
+
+        .rule-value {
+            grid-column: 1 / -1;
+        }
+
+        .rule-match,
+        .toggle-label {
+            font-size: 0.75rem;
+            padding: 0.4rem;
+        }
+
+        .pagination-controls {
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .pagination-buttons {
+            width: 100%;
+            justify-content: center;
+        }
+    }
+</style>
+
 {% endblock %}
 
 {% block scripts %}

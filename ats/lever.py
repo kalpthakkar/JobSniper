@@ -13,10 +13,30 @@ Response shape: a JSON array (not an object):
       "team": "Engineering",
       "location": "San Francisco, CA",
       "department": "Product"
+      "commitment": "Part-Time",
+      "allLocations": [
+        "San Francisco, CA"
+      ]
     },
     "hostedUrl": "https://jobs.lever.co/company/uuid",
     "applyUrl": "https://jobs.lever.co/company/uuid/apply",
-    "createdAt": 1700000000000   <- Unix ms timestamp
+    "createdAt": 1700000000000,   <- Unix ms timestamp
+    "descriptionPlain": "About Company...",
+    "description": "\\u003Cp\\u003EAbout Company...\\u003C/p\\u003E",
+    "list": [
+      {"text": "What You'll Do:", "content": "\\u003Cdiv\\u003E\\u003Cli\\u003E...\\u003C/li\\u003E\\u003C/div\\u003E"},
+      {"text": "What You'll Bring:", "content": "\\u003Cdiv\\u003E\\u003Cli\\u003E...\\u003C/li\\u003E\\u003C/div\\u003E"}
+    ],
+    "salaryRange": {
+      "min": 15,
+      "max": 15,
+      "currency": "USD",
+      "interval": "per-hour-wage"
+    },
+    "country": "US",
+    "workplaceType": "onsite",
+    "additionalPlain": "Closing text...",
+    "additional": "\\u003Cp\\u003EClosing text...\\u003C/p\\u003E"
   }
 ]
 """
@@ -24,14 +44,118 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 import requests
 
 from core.models import Job, Company
 from core.http_client import HttpClient
+from core.description_parser import parse_html_description
 
 logger = logging.getLogger("job_sniper.ats.lever")
+
+# ─────────────────────────────────────────────────────────────────────
+# Description parsing helpers
+# ─────────────────────────────────────────────────────────────────────
+
+def _decode_unicode_escaped_html(encoded_str: Optional[str]) -> Optional[str]:
+    """
+    Decode Unicode escape sequences in a string.
+    
+    Example: "\\u003Cp\\u003EHello\\u003C/p\\u003E" → "<p>Hello</p>"
+    
+    Used to decode Lever's HTML descriptions which come as Unicode-escaped strings.
+    """
+    if not encoded_str or not isinstance(encoded_str, str):
+        return None
+    
+    # Strip whitespace for checking
+    if not encoded_str.strip():
+        return None
+    
+    try:
+        # Use json.loads to decode Unicode escape sequences
+        # Wrap in quotes to create valid JSON string
+        decoded = json.loads(f'"{encoded_str}"')
+        return decoded if (decoded and decoded.strip()) else None
+    except (json.JSONDecodeError, ValueError):
+        # If decoding fails, return original string if not empty
+        return encoded_str.strip() if encoded_str.strip() else None
+
+
+def _build_lever_description(raw_job: Dict[str, Any]) -> Optional[str]:
+    """
+    Build complete job description from Lever's multi-part structure.
+    
+    Structure:
+    1. Intro: descriptionPlain (preferred) or description (Unicode-escaped HTML, fallback)
+    2. Core: list[{text: "Section Title", content: "Unicode-escaped HTML"}, ...]
+    3. Closing: additionalPlain (preferred) or additional (Unicode-escaped HTML, fallback)
+    
+    Returns assembled plain text description or None if no description available.
+    """
+    parts = []
+    
+    # Part 1: Introduction
+    intro = None
+    description_plain = raw_job.get("descriptionPlain", "")
+    if description_plain and description_plain.strip():
+        intro = description_plain.strip()
+    else:
+        # Fallback to encoded HTML
+        description_html = raw_job.get("description", "")
+        if description_html:
+            decoded = _decode_unicode_escaped_html(description_html)
+            if decoded:
+                intro = parse_html_description(decoded)
+    
+    if intro:
+        parts.append(intro)
+    
+    # Part 2: Core content (list of sections)
+    job_list = raw_job.get("list", [])
+    if job_list and isinstance(job_list, list):
+        for section in job_list:
+            if not isinstance(section, dict):
+                continue
+            
+            section_title = section.get("text", "").strip()
+            section_content = section.get("content", "")
+            
+            if section_content:
+                # Decode Unicode escape sequences
+                decoded_html = _decode_unicode_escaped_html(section_content)
+                if decoded_html:
+                    # Parse HTML to plain text
+                    parsed_content = parse_html_description(decoded_html)
+                    if parsed_content:
+                        if section_title:
+                            parts.append(f"\n{section_title}\n{parsed_content}")
+                        else:
+                            parts.append(f"\n{parsed_content}")
+    
+    # Part 3: Closing/Additional info
+    additional = None
+    additional_plain = raw_job.get("additionalPlain", "")
+    if additional_plain and additional_plain.strip():
+        additional = additional_plain.strip()
+    else:
+        # Fallback to encoded HTML
+        additional_html = raw_job.get("additional", "")
+        if additional_html:
+            decoded = _decode_unicode_escaped_html(additional_html)
+            if decoded:
+                additional = parse_html_description(decoded)
+    
+    if additional:
+        parts.append(f"\n{additional}")
+    
+    # Assemble final description
+    if parts:
+        return "\n".join(parts)
+    
+    return None
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Rate limiting parameters for Lever
@@ -128,6 +252,9 @@ def extract_new_jobs(
 
         categories = raw.get("categories", {})
         location   = categories.get("location", "")
+        country_descriptor = raw.get("country")
+        if country_descriptor:
+            location += f' • {country_descriptor}'
         department = categories.get("team", "") or categories.get("department", "")
         remote     = "remote" in location.lower()
 
@@ -152,6 +279,7 @@ def extract_new_jobs(
             posted_at=posted_at,
             remote=remote,
             salary=None,
+            description=_build_lever_description(raw),
             raw=raw,
         ))
 

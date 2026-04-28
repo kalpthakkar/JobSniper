@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 
 from core.http_client import HttpClient
 from core.models import Company, Job
+from core.description_parser import parse_html_description
 
 logger = logging.getLogger("job_sniper.ats.workday")
 
@@ -309,7 +310,14 @@ def extract_new_jobs(
                 job_url = info.get("externalUrl") or f"{origin}{_ensure_path(external_path)}"
 
                 location = info.get("location") or normalized.get("locationsText") or ""
+                country_descriptor = info.get("jobRequisitionLocation", {}).get("country", {}).get('descriptor')
+                if country_descriptor:
+                    location += f' • {country_descriptor}'
                 remote = "remote" in location.lower() if isinstance(location, str) else False
+
+                # Extract and parse job description from jobDescription field (HTML format)
+                raw_description_html = info.get("jobDescription", "")
+                description = parse_html_description(raw_description_html) if raw_description_html else None
 
                 new_jobs.append(Job(
                     id=job_id,
@@ -321,6 +329,7 @@ def extract_new_jobs(
                     posted_at=info.get("postedOn") or normalized.get("postedOn"),
                     remote=remote,
                     salary=None,
+                    description=description,
                     raw=details,
                 ))
 

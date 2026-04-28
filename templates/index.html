@@ -9,7 +9,7 @@
 </div>
 
 <!-- Search Bar -->
-<div class="panel" style="margin-bottom: 1.5rem; padding: 1rem 1.5rem;">
+<div class="panel disable-select" style="margin-bottom: 1.5rem; padding: 1rem 1.5rem;">
     <div style="display: flex; align-items: center; gap: 1rem;">
         <i class="fa-solid fa-magnifying-glass" style="color: #666; font-size: 1.1rem;"></i>
         <input 
@@ -22,7 +22,7 @@
     </div>
 </div>
 
-<div class="panel">
+<div class="panel disable-select">
     <div class="table-responsive">
         <table class="company-table">
             <thead>
@@ -81,7 +81,7 @@
         background: #505050;
         color: white;
         transform: scale(1.05);
-    }S
+    }
     
     .copy-btn:active {
         transform: scale(0.95);
@@ -98,6 +98,31 @@
         box-shadow: 0 2px 8px rgba(0,0,0,0.2);
         z-index: 1000;
         animation: slideIn 0.3s ease;
+    }
+    
+    .feedback-notification {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        color: white;
+        padding: 0.75rem 1.5rem;
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        z-index: 1000;
+        animation: slideIn 0.3s ease;
+        font-weight: 500;
+    }
+    
+    .feedback-notification.success {
+        background: #4caf50;
+    }
+    
+    .feedback-notification.error {
+        background: #f44336;
+    }
+    
+    .feedback-notification.info {
+        background: #2196F3;
     }
     
     @keyframes slideIn {
@@ -217,6 +242,100 @@
         updateResultCount();
     }
     
+    // ===== AJAX HANDLERS =====
+    function updateCompany(boardToken, ats, priority) {
+        fetch(`{{ url_for('update', board_token='__TOKEN__') }}`.replace('__TOKEN__', boardToken), {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({
+                'ats': ats,
+                'priority': priority
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                // Update local data
+                const company = allCompanies.find(c => c.boardToken === boardToken);
+                if (company) {
+                    company.ats = ats;
+                    company.priority = priority;
+                }
+                // Re-render current page
+                renderTable();
+                showFeedback('✓ Updated successfully', 'success');
+            } else {
+                showFeedback('✗ Update failed: ' + (data.message || 'Unknown error'), 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Update error:', error);
+            showFeedback('✗ Update failed: ' + error.message, 'error');
+        });
+    }
+    
+    function deleteCompany(boardToken) {
+        if (!confirm(`Delete "${boardToken}"?\nThis action cannot be undone.`)) {
+            return;
+        }
+        
+        fetch(`{{ url_for('delete', board_token='__TOKEN__') }}`.replace('__TOKEN__', boardToken), {
+            method: 'POST',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                // Remove from local data (use splice to modify in place, not reassign const)
+                const allIndex = allCompanies.findIndex(c => c.boardToken === boardToken);
+                if (allIndex > -1) {
+                    allCompanies.splice(allIndex, 1);
+                }
+                
+                const filteredIndex = filteredCompanies.findIndex(c => c.boardToken === boardToken);
+                if (filteredIndex > -1) {
+                    filteredCompanies.splice(filteredIndex, 1);
+                }
+                
+                // Adjust pagination if needed
+                const totalPages = Math.ceil(filteredCompanies.length / ITEMS_PER_PAGE);
+                if (currentPage > totalPages && totalPages > 0) {
+                    currentPage = totalPages;
+                } else if (totalPages === 0) {
+                    currentPage = 1;
+                }
+                
+                // Re-render
+                renderTable();
+                updatePagination();
+                updateResultCount();
+                showFeedback('✓ Deleted successfully', 'success');
+            } else {
+                showFeedback('✗ Delete failed: ' + (data.message || 'Unknown error'), 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Delete error:', error);
+            showFeedback('✗ Delete failed: ' + error.message, 'error');
+        });
+    }
+    
+    function showFeedback(message, type = 'info') {
+        const feedback = document.createElement('div');
+        feedback.className = 'feedback-notification ' + type;
+        feedback.textContent = message;
+        document.body.appendChild(feedback);
+        
+        setTimeout(() => {
+            feedback.remove();
+        }, 3000);
+    }
+    
     // ===== RENDER TABLE =====
     function renderTable() {
         const tbody = document.getElementById('companiesTableBody');
@@ -268,36 +387,46 @@
                 <td>${company.ats}</td>
                 <td>${company.priority}</td>
                 <td class="actions-cell">
-                    <form method="post" class="inline-form" style="display: flex; gap: 8px; align-items: center;">
-                        <select name="ats">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <select class="ats-select" data-token="${company.boardToken}">
                             ${atsOptions}
                         </select>
-                        <select name="priority">
+                        <select class="priority-select" data-token="${company.boardToken}">
                             ${priorityOptions}
                         </select>
-                        <button type="submit" class="btn btn-sm">Update</button>
-                    </form>
-                    <a href="javascript:void(0)" class="link-danger" onclick="if(confirm('Delete this company?')) window.location.href='${generateDeleteUrl(company.boardToken)}'">Delete</a>
+                        <button type="button" class="btn btn-sm update-btn" data-token="${company.boardToken}">Update</button>
+                    </div>
+                    <a href="javascript:void(0)" class="link-danger delete-btn" data-token="${company.boardToken}">Delete</a>
                 </td>
             `;
-            
-            // Set form action for this company
-            const form = tr.querySelector('form');
-            form.action = generateUpdateUrl(company.boardToken);
             
             tbody.appendChild(tr);
         });
         
-        // Setup copy button listeners
+        // Setup event listeners
         setupCopyButtons();
+        setupActionListeners();
     }
     
-    function generateUpdateUrl(token) {
-        return "{{ url_for('update', board_token='__TOKEN__') }}".replace('__TOKEN__', token);
-    }
-    
-    function generateDeleteUrl(token) {
-        return "{{ url_for('delete', board_token='__TOKEN__') }}".replace('__TOKEN__', token);
+    function setupActionListeners() {
+        // Update button listeners
+        document.querySelectorAll('.update-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const token = btn.getAttribute('data-token');
+                const row = btn.closest('tr');
+                const ats = row.querySelector('.ats-select').value;
+                const priority = row.querySelector('.priority-select').value;
+                updateCompany(token, ats, priority);
+            });
+        });
+        
+        // Delete button listeners
+        document.querySelectorAll('.delete-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const token = btn.getAttribute('data-token');
+                deleteCompany(token);
+            });
+        });
     }
     
     // ===== PAGINATION CONTROLS =====

@@ -15,6 +15,8 @@ from typing import Any, List, Optional
 import requests
 
 from core.models import Job
+from core.description_parser import format_for_console, format_for_telegram, format_for_webhook
+from core.filter import apply_all_filters
 
 logger = logging.getLogger("job_sniper.notifier")
 
@@ -73,9 +75,10 @@ class Notifier:
         if not jobs:
             return
 
-        jobs = self._apply_notification_filters(jobs)
-        if not jobs:
-            logger.info("[notifier] No jobs matched notification filter configuration")
+        # Apply all filters: notification rules + preferences
+        filtered_jobs, notification_removed, preference_removed = apply_all_filters(jobs, self.db)
+        if not filtered_jobs:
+            logger.info(f"[notifier] All jobs filtered out (notification: {notification_removed}, preference: {preference_removed})")
             return
 
         # Get currently enabled channels from database
@@ -84,70 +87,15 @@ class Notifier:
         for channel in channels:
             try:
                 if channel == "console":
-                    self._console(jobs)
+                    self._console(filtered_jobs)
                 elif channel == "telegram":
-                    self._telegram(jobs)
+                    self._telegram(filtered_jobs)
                 elif channel == "webhook":
-                    self._webhook(jobs)
+                    self._webhook(filtered_jobs)
                 else:
                     logger.warning(f"Unknown notification channel: {channel}")
             except Exception as e:
                 logger.error(f"Notification failed on channel '{channel}': {e}")
-
-    def _apply_notification_filters(self, jobs: List[Job]) -> List[Job]:
-        config = {}
-        if self.db is not None:
-            config = self.db.get_notification_config() or {}
-
-        if not config.get("enabled", False):
-            return jobs
-
-        def normalize(text: str, case_sensitive: bool) -> str:
-            return text if case_sensitive else text.lower()
-
-        def rule_matches(text: str, rule: dict) -> bool:
-            value = str(rule.get("value", "")).strip()
-            if not value:
-                return False
-            case_sensitive = bool(rule.get("case_sensitive", False))
-            text = normalize(text or "", case_sensitive)
-            pattern = normalize(value, case_sensitive)
-            match_type = rule.get("match", "includes")
-            if match_type == "starts_with":
-                return text.startswith(pattern)
-            if match_type == "ends_with":
-                return text.endswith(pattern)
-            return pattern in text
-
-        def section_passes(text: str, section: dict) -> bool:
-            if not section.get("enabled", False):
-                return True
-            rules = section.get("rules", []) or []
-            if not rules:
-                return True
-            return any(rule_matches(text, rule) for rule in rules)
-
-        blacklist = config.get("blacklist", {})
-        filtered = []
-        for job in jobs:
-            if blacklist.get("enabled", False):
-                if any(rule_matches(job.title if job.title else "", rule)
-                       or rule_matches(job.company if job.company else "", rule)
-                       or rule_matches(job.location if job.location else "", rule)
-                       for rule in blacklist.get("rules", []) or []):
-                    continue
-
-            if not section_passes(job.title, config.get("job_title", {})):
-                continue
-            if not section_passes(job.company, config.get("company_name", {})):
-                continue
-            if not section_passes(job.location, config.get("location", {})):
-                continue
-
-            filtered.append(job)
-
-        logger.info(f"[notifier] {len(filtered)}/{len(jobs)} jobs passed notification filters")
-        return filtered
 
     # ------------------------------------------------------------------
     # Console (rich terminal output)
@@ -182,6 +130,13 @@ class Notifier:
                 salary_tag = f"\n   {_YELLOW}💰 {job.salary}{_RESET}" if job.salary else ""
                 dept_tag   = f"  •  {job.department}" if job.department else ""
                 posted_tag = f"\n   {_DIM}Posted: {job.posted_at}{_RESET}" if job.posted_at else ""
+                
+                # Format description for console (truncated to 100 chars)
+                description_text = ""
+                if job.description:
+                    truncated_desc = format_for_console(job.description)
+                    if truncated_desc:
+                        description_text = f"\n   {_DIM}📝 {truncated_desc}{_RESET}"
 
                 print(f"\n  {_BOLD}{job.company}{_RESET}{dept_tag}")
                 print(f"  {_GREEN}▶ {job.title}{_RESET}{remote_tag}")
@@ -189,6 +144,8 @@ class Notifier:
                     print(f"  📍 {job.location}")
                 if salary_tag:
                     print(salary_tag)
+                if description_text:
+                    print(description_text)
                 if posted_tag:
                     print(posted_tag)
                 print(f"  🔗 {_CYAN}{job.url}{_RESET}")
@@ -221,12 +178,19 @@ class Notifier:
         salary_tag = f"\n💰 {job.salary}" if job.salary else ""
         dept_tag   = f"\n🏢 {job.department}" if job.department else ""
         loc_tag    = f"\n📍 {job.location}" if job.location else ""
+        
+        # Format description for Telegram (truncated to 100 chars, Markdown-escaped)
+        description_tag = ""
+        if job.description:
+            truncated_desc = format_for_telegram(job.description)
+            if truncated_desc:
+                description_tag = f"\n📝 {truncated_desc}"
 
         text = (
             f"🚨 *New Job Alert*\n\n"
             f"*{self._escape(job.company)}*\n"
             f"➡️ {self._escape(job.title)}{remote_tag}\n"
-            f"{loc_tag}{dept_tag}{salary_tag}\n\n"
+            f"{loc_tag}{dept_tag}{salary_tag}{description_tag}\n\n"
             f"[Apply Now]({job.url})"
         )
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -253,11 +217,21 @@ class Notifier:
             job_lines = []
             for j, job in enumerate(batch, 1):
                 remote = "🌍" if job.remote else "📍"
-                job_lines.append(
+                job_summary = (
                     f"{j}. *{self._escape(job.title[:40])}*\n"
-                    f"   {remote} {self._escape(job.location[:30])}\n"
-                    f"   🔗 [View]({job.url})"
+                    f"   {remote} {self._escape(job.location[:30])}"
                 )
+                
+                # Add truncated description if available
+                if job.description:
+                    truncated_desc = format_for_telegram(job.description)
+                    if truncated_desc:
+                        # Limit to 60 chars for batch summary
+                        desc_preview = truncated_desc[:60] + "..." if len(truncated_desc) > 60 else truncated_desc
+                        job_summary += f"\n   {desc_preview}"
+                
+                job_summary += f"\n   🔗 [View]({job.url})"
+                job_lines.append(job_summary)
             
             text = (
                 f"🚨 *New Jobs Alert* [{batch_num}/{total_batches}]\n\n"
@@ -312,6 +286,7 @@ class Notifier:
                     "posted_at":  j.posted_at,
                     "remote":     j.remote,
                     "salary":     j.salary,
+                    "description": format_for_webhook(j.description),  # Full description
                 }
                 for j in jobs
             ],

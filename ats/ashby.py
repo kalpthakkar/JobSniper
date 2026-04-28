@@ -57,6 +57,7 @@ import requests
 
 from core.models import Job, Company
 from core.http_client import HttpClient
+from core.description_parser import parse_html_description
 
 logger = logging.getLogger("job_sniper.ats.ashby")
 
@@ -221,6 +222,11 @@ def _job_from_rest(raw: dict, company: Company) -> Job:
     REST uses: location (not locationName), team (not teamName),
     publishedAt (not publishedDate), jobUrl + applyUrl.
     compensation is a nested object.
+    
+    Description handling:
+      - Prefer descriptionPlain (already plain text)
+      - Fall back to descriptionHtml if descriptionPlain is empty/missing
+      - Parse HTML if using descriptionHtml
     """
     location  = raw.get("location", "") or raw.get("locationName", "") or ""
     is_remote = raw.get("isRemote", False)
@@ -242,6 +248,19 @@ def _job_from_rest(raw: dict, company: Company) -> Job:
     # URL: prefer jobUrl (public listing), fall back to applyUrl
     url = raw.get("jobUrl", "") or raw.get("applyUrl", "")
 
+    # Description: prefer descriptionPlain, fall back to descriptionHtml
+    description: Optional[str] = None
+    description_plain = raw.get("descriptionPlain", "")
+    if description_plain and description_plain.strip():
+        # Use plain text directly (already in plain text format)
+        description = description_plain.strip()
+    else:
+        # Fall back to HTML version if plain text is empty
+        description_html = raw.get("descriptionHtml", "")
+        if description_html and description_html.strip():
+            # Parse HTML to plain text
+            description = parse_html_description(description_html)
+
     return Job(
         id=str(raw.get("id", "")),
         title=raw.get("title", "Untitled"),
@@ -252,6 +271,7 @@ def _job_from_rest(raw: dict, company: Company) -> Job:
         posted_at=raw.get("publishedAt"),   # "2026-03-17T20:30:40.304+00:00"
         remote=is_remote,
         salary=salary,
+        description=description,
         raw=raw,
     )
 
@@ -260,8 +280,24 @@ def _job_from_gql(raw: dict, company: Company, teams: dict) -> Job:
     """
     Fallback: build a Job from GQL fields only (fewer fields available).
     Used when REST is unavailable but GQL succeeded.
+    
+    Description handling:
+      - Prefer descriptionPlain if available
+      - Fall back to descriptionHtml if present
+      - May be None if not available in GQL response
     """
     location = raw.get("locationName", "") or ""
+    
+    # Description: prefer descriptionPlain, fall back to descriptionHtml
+    description: Optional[str] = None
+    description_plain = raw.get("descriptionPlain", "")
+    if description_plain and description_plain.strip():
+        description = description_plain.strip()
+    else:
+        description_html = raw.get("descriptionHtml", "")
+        if description_html and description_html.strip():
+            description = parse_html_description(description_html)
+    
     return Job(
         id=str(raw.get("id", "")),
         title=raw.get("title", "Untitled"),
@@ -272,6 +308,7 @@ def _job_from_gql(raw: dict, company: Company, teams: dict) -> Job:
         posted_at=None,   # not available in this GQL query
         remote=False,     # not available in this GQL query
         salary=raw.get("compensationTierSummary"),
+        description=description,
         raw=raw,
     )
 

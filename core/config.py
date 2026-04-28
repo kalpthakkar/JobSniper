@@ -38,6 +38,16 @@ class Config:
         self.tesla_cooldown_minutes: int = self.system.get("tesla_cooldown_minutes", 3)
         self.tesla_request_timeout: int = self.system.get("tesla_request_timeout", 60)
 
+        # Apple settings
+        self.apple_enabled: bool        = self.system.get("apple_enabled", True)
+        self.apple_cooldown_minutes: int = self.system.get("apple_cooldown_minutes", 3)
+        self.apple_request_timeout: int = self.system.get("apple_request_timeout", 10)
+
+        # Microsoft settings
+        self.microsoft_enabled: bool        = self.system.get("microsoft_enabled", True)
+        self.microsoft_cooldown_minutes: int = self.system.get("microsoft_cooldown_minutes", 3)
+        self.microsoft_request_timeout: int = self.system.get("microsoft_request_timeout", 10)
+
         # 24-hour filter settings per ATS type
         disable_24h_filter_config = self.system.get("disable_24h_filter", {})
         self.disable_24h_filter: Dict[str, bool] = {
@@ -47,6 +57,10 @@ class Config:
             "workable": disable_24h_filter_config.get("workable", False),
             "workday": disable_24h_filter_config.get("workday", False),
         }
+
+        # Frequency inspection settings
+        self.frequency_inspection_enabled: bool = self.system.get("frequency_inspection_enabled", False)
+        self.frequency_inspect_board_token: str = self.system.get("frequency_inspect_board_token", "")
 
     def get_ats_schema(self, ats: ATSType) -> Dict:
         return self.ats_schemas.get(ats.value, {})

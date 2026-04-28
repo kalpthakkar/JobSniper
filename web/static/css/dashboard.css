@@ -368,7 +368,7 @@ select {
 
 .rule-row {
     display: grid;
-    grid-template-columns: 1fr 180px 160px 70px;
+    grid-template-columns: 1fr 180px 160px 90px;
     gap: 12px;
     align-items: center;
     padding: 14px;
@@ -385,6 +385,9 @@ select {
 .rule-row button {
     min-width: 64px;
     padding: 10px 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .section-footer {

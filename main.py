@@ -22,6 +22,8 @@ from core.http_client import HttpClient
 from core.poller import PollOrchestrator
 from core.google_poller import GooglePoller
 from core.tesla_poller import TeslaPoller
+from core.apple_poller import ApplePoller
+from core.microsoft_poller import MicrosoftPoller
 from notifications.notifier import Notifier
 
 logger = logging.getLogger("job_sniper")
@@ -182,12 +184,17 @@ def main():
 
     # ------ Full monitoring loop ------
     enabled_companies = get_enabled_companies(companies, db)
+    google_enabled = db.get_setting("company_google") != "false"
+    tesla_enabled = db.get_setting("company_tesla") != "false"
+    apple_enabled = db.get_setting("company_apple") != "false"
+    microsoft_enabled = db.get_setting("company_microsoft") != "false"
     
-    if not enabled_companies:
-        logger.error("❌ No enabled companies found. Check your ATS settings in the dashboard.")
+    # Allow start if either ATS companies OR company adapters are enabled
+    if not enabled_companies and not google_enabled and not tesla_enabled and not apple_enabled and not microsoft_enabled:
+        logger.error("❌ No enabled monitoring sources found. Enable at least one ATS type or company adapter in the dashboard.")
         sys.exit(1)
     
-    logger.info(f"✓ Starting with {len(enabled_companies)} enabled companies (of {len(companies)} total)")
+    logger.info(f"✓ Starting with {len(enabled_companies)} enabled ATS companies (of {len(companies)} total)")
     
     # Initialize notification channel settings from config (if not already set)
     # This allows the UI to toggle channels in real-time
@@ -210,8 +217,7 @@ def main():
         db=db,
     )
 
-    # CHANGED: Pass all companies; orchestrator handles ATS filtering internally with live monitoring
-    # Create Google and Tesla pollers (but don't start them yet)
+    # CHANGED: Pass, Tesla, and Apple pollers (but don't start them yet)
     google_poller = GooglePoller(
         db=db,
         notifier=notifier,
@@ -226,12 +232,23 @@ def main():
         request_timeout=config.tesla_request_timeout,
     )
     
+    apple_poller = ApplePoller(
+        db=db,
+        notifier=notifier,
+        cooldown_minutes=config.apple_cooldown_minutes,
+        request_timeout=config.apple_request_timeout,
+    )
+    
+    microsoft_poller = MicrosoftPoller(
+        db=db,
+        notifier=notifier,
+        cooldown_minutes=config.microsoft_cooldown_minutes,
+        request_timeout=config.microsoft_request_timeout,
+    )
+    
     orchestrator = PollOrchestrator(companies, config, db, http, notifier, google_poller, tesla_poller)
 
-    # Start Google and Tesla pollers based on their settings
-    google_enabled = db.get_setting("company_google") != "false"  # Default to True
-    tesla_enabled = db.get_setting("company_tesla") != "false"    # Default to True
-    
+    # Start Google, Tesla, and Apple pollers based on their settings (already checked for validation above)
     if google_enabled:
         google_poller.start()
         logger.info("✓ Google Careers poller started")
@@ -243,6 +260,18 @@ def main():
         logger.info("✓ Tesla Careers poller started")
     else:
         logger.info("✗ Tesla Careers poller disabled (can be enabled in settings)")
+    
+    if apple_enabled:
+        apple_poller.start()
+        logger.info("✓ Apple Careers poller started")
+    else:
+        logger.info("✗ Apple Careers poller disabled (can be enabled in settings)")
+    
+    if microsoft_enabled:
+        microsoft_poller.start()
+        logger.info("✓ Microsoft Careers poller started")
+    else:
+        logger.info("✗ Microsoft Careers poller disabled (can be enabled in settings)")
 
     try:
         orchestrator.start()
@@ -251,6 +280,8 @@ def main():
     finally:
         google_poller.stop()
         tesla_poller.stop()
+        apple_poller.stop()
+        microsoft_poller.stop()
         logger.info("Job Sniper stopped.")
 
 

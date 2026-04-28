@@ -8,34 +8,550 @@
     </div>
 </div>
 
-<div class="panel">
-    <form action="{{ url_for('add_company') }}" method="post" class="form-grid">
-        <label>
-            <span>Board Token / URL</span>
-            <input type="text" name="board_token" placeholder="" required />
-        </label>
+<div id="toast-container" style="position: fixed; top: 20px; right: 20px; z-index: 9999; pointer-events: none;"></div>
 
-        <label>
-            <span>ATS</span>
-            <select name="ats" required>
-                {% for ats in ats_types %}
-                <option value="{{ ats }}">{{ ats }}</option>
-                {% endfor %}
-            </select>
-        </label>
+<div class="panel disable-select">
+    <form id="add-company-form">
+        <div class="form-section">
+            <div class="token-input-section">
+                <div class="label-row">
+                    <label for="board-token-input" class="label-text">Board Token / URL</label>
+                    <div class="toggle-wrapper">
+                        <input type="checkbox" id="bulk-mode-toggle" class="toggle-checkbox">
+                        <label for="bulk-mode-toggle" class="toggle-label"></label>
+                        <span class="toggle-label-text">Bulk Add</span>
+                    </div>
+                </div>
+                <input type="text" id="board-token-input" name="board_token" placeholder="Enter a single board token or URL" required />
+                <textarea id="board-token-textarea" name="board_tokens" placeholder="Paste multiple board tokens/URLs, one per line..." style="display: none;"></textarea>
+                <p class="input-hint" id="input-hint">Add a single company at a time</p>
+            </div>
 
-        <label>
-            <span>Priority</span>
-            <select name="priority" required>
-                {% for p in priorities %}
-                <option value="{{ p }}">{{ p }}</option>
-                {% endfor %}
-            </select>
-        </label>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="ats-select" class="label-text">ATS</label>
+                    <select id="ats-select" name="ats" required>
+                        {% for ats in ats_types %}
+                        <option value="{{ ats }}" {% if ats == default_ats %}selected{% endif %}>{{ ats }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="priority-select" class="label-text">Priority</label>
+                    <select id="priority-select" name="priority" required>
+                        {% for p in priorities %}
+                        <option value="{{ p }}" {% if p == default_priority %}selected{% endif %}>{{ p }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+        </div>
 
         <div class="form-actions">
-            <button type="submit" class="btn btn-primary">Save Company</button>
+            <button type="submit" class="btn btn-primary" id="submit-btn">Save Company</button>
         </div>
     </form>
 </div>
+
+<style>
+    /* Toast Animations */
+    @keyframes slideIn {
+        from {
+            transform: translateX(400px);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+
+    @keyframes slideOut {
+        from {
+            transform: translateX(0);
+            opacity: 1;
+        }
+        to {
+            transform: translateX(400px);
+            opacity: 0;
+        }
+    }
+
+    .toast {
+        pointer-events: auto;
+        min-width: 300px;
+        padding: 14px 18px;
+        border-radius: 12px;
+        font-weight: 500;
+        font-size: 0.95rem;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        margin-bottom: 12px;
+        animation: slideIn 0.3s ease-out;
+    }
+
+    .toast.hide {
+        animation: slideOut 0.3s ease-out forwards;
+    }
+
+    .toast.success {
+        background: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+    }
+
+    .toast.error {
+        background: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+    }
+
+    /* Form Container */
+    #add-company-form {
+        display: flex;
+        flex-direction: column;
+        gap: 2rem;
+    }
+
+    .form-section {
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+    }
+
+    /* Token Input Section */
+    .token-input-section {
+        flex: 1;
+    }
+
+    .label-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 0.75rem;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    .label-text {
+        font-weight: 600;
+        font-size: 0.95rem;
+        color: #333;
+        display: block;
+    }
+
+    /* Toggle Switch Container */
+    .toggle-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        background: #f5f5f5;
+        padding: 0.5rem 0.75rem;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+    }
+
+    .toggle-checkbox {
+        display: none;
+    }
+
+    .toggle-label {
+        position: relative;
+        display: inline-block;
+        width: 44px;
+        height: 24px;
+        background-color: #d0d0d0;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: background-color 0.3s ease;
+        border: 1px solid #b0b0b0;
+    }
+
+    .toggle-label::after {
+        content: '';
+        position: absolute;
+        width: 18px;
+        height: 18px;
+        background-color: white;
+        border-radius: 50%;
+        top: 2px;
+        left: 2px;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .toggle-checkbox:checked + .toggle-label {
+        background-color: #4CAF50;
+        border-color: #45a049;
+    }
+
+    .toggle-checkbox:checked + .toggle-label::after {
+        transform: translateX(20px);
+        box-shadow: 0 2px 4px rgba(76, 175, 80, 0.2);
+    }
+
+    .toggle-label:hover {
+        opacity: 0.9;
+    }
+
+    .toggle-label-text {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #666;
+        white-space: nowrap;
+    }
+
+    /* Input & Textarea Styling */
+    #board-token-input,
+    #board-token-textarea {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        border: 2px solid #e0e0e0;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        font-family: inherit;
+        transition: all 0.3s ease;
+    }
+
+    #board-token-input:focus,
+    #board-token-textarea:focus {
+        outline: none;
+        border-color: #4CAF50;
+        box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+        background-color: #fafafa;
+    }
+
+    #board-token-textarea {
+        resize: vertical;
+        min-height: 140px;
+        max-height: 300px;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        line-height: 1.5;
+    }
+
+    /* Input Hint */
+    .input-hint {
+        margin: 0.5rem 0 0 0;
+        font-size: 0.85rem;
+        color: #888;
+        font-style: italic;
+    }
+
+    /* Form Row for ATS and Priority */
+    .form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+    }
+
+    .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .form-group label {
+        font-weight: 600;
+        font-size: 0.95rem;
+        color: #333;
+    }
+
+    #ats-select,
+    #priority-select {
+        padding: 0.75rem 1rem;
+        border: 2px solid #e0e0e0;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        background-color: white;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-family: inherit;
+    }
+
+    #ats-select:focus,
+    #priority-select:focus {
+        outline: none;
+        border-color: #4CAF50;
+        box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+    }
+
+    #ats-select:hover,
+    #priority-select:hover {
+        border-color: #4CAF50;
+    }
+
+    /* Form Actions */
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        justify-content: flex-start;
+        padding-top: 1rem;
+        border-top: 1px solid #e0e0e0;
+    }
+
+    .btn {
+        padding: 0.75rem 2rem;
+        border: none;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .btn-primary {
+        background-color: #4CAF50;
+        color: white;
+        box-shadow: 0 2px 8px rgba(76, 175, 80, 0.2);
+    }
+
+    .btn-primary:hover:not(:disabled) {
+        background-color: #45a049;
+        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+        transform: translateY(-2px);
+    }
+
+    .btn-primary:disabled {
+        background-color: #a8d5a8;
+        cursor: not-allowed;
+        opacity: 0.7;
+    }
+
+    /* Responsive Design */
+    @media (max-width: 768px) {
+        .label-row {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .toggle-wrapper {
+            width: 100%;
+            justify-content: space-between;
+        }
+
+        .form-row {
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+
+        #add-company-form {
+            gap: 1.5rem;
+        }
+
+        .form-section {
+            gap: 1.25rem;
+        }
+
+        .toggle-label-text {
+            display: none;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .toggle-wrapper {
+            padding: 0.4rem 0.6rem;
+        }
+
+        .toggle-label {
+            width: 40px;
+            height: 22px;
+        }
+
+        .toggle-label::after {
+            width: 16px;
+            height: 16px;
+        }
+
+        .toggle-checkbox:checked + .toggle-label::after {
+            transform: translateX(18px);
+        }
+
+        #board-token-input,
+        #board-token-textarea,
+        #ats-select,
+        #priority-select {
+            font-size: 16px; /* Prevents zoom on iOS */
+            padding: 0.6rem 0.8rem;
+        }
+
+        .btn {
+            padding: 0.65rem 1.5rem;
+            font-size: 0.9rem;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showToast(message, type = 'success') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    
+    const icon = type === 'success' ? '✓' : '✗';
+    toast.textContent = `${icon} ${message}`;
+    
+    container.appendChild(toast);
+
+    // Auto-remove after 4 seconds
+    setTimeout(() => {
+        toast.classList.add('hide');
+        setTimeout(() => {
+            toast.remove();
+        }, 300);
+    }, 4000);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('add-company-form');
+    const submitBtn = document.getElementById('submit-btn');
+    const bulkModeToggle = document.getElementById('bulk-mode-toggle');
+    const singleInput = document.getElementById('board-token-input');
+    const bulkTextarea = document.getElementById('board-token-textarea');
+    const inputHint = document.getElementById('input-hint');
+
+    // Update hint text and switch inputs on toggle change
+    bulkModeToggle.addEventListener('change', function() {
+        const isBulk = this.checked;
+
+        if (isBulk) {
+            // Switch to bulk mode
+            singleInput.style.display = 'none';
+            singleInput.removeAttribute('required');
+            bulkTextarea.style.display = 'block';
+            bulkTextarea.setAttribute('required', 'required');
+            inputHint.textContent = 'Paste multiple tokens, one per line - all will use the selected ATS and Priority';
+            submitBtn.textContent = 'Save Companies';
+        } else {
+            // Switch to single mode
+            bulkTextarea.style.display = 'none';
+            bulkTextarea.removeAttribute('required');
+            singleInput.style.display = 'block';
+            singleInput.setAttribute('required', 'required');
+            inputHint.textContent = 'Add a single company at a time';
+            submitBtn.textContent = 'Save Company';
+        }
+    });
+
+    form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+
+        const isBulkMode = bulkModeToggle.checked;
+        const ats = document.querySelector('select[name="ats"]').value;
+        const priority = document.querySelector('select[name="priority"]').value;
+
+        try {
+            submitBtn.disabled = true;
+            submitBtn.textContent = isBulkMode ? 'Adding...' : 'Adding...';
+
+            if (isBulkMode) {
+                // Bulk mode: create multiple entries
+                const tokens = bulkTextarea.value
+                    .split('\n')
+                    .map(token => token.trim())
+                    .filter(token => token.length > 0);
+
+                if (tokens.length === 0) {
+                    showToast('Please enter at least one board token/URL', 'error');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Save Companies';
+                    return;
+                }
+
+                let successCount = 0;
+                let failureCount = 0;
+                const failedTokens = [];
+
+                for (const token of tokens) {
+                    const formData = new FormData();
+                    formData.append('board_token', token);
+                    formData.append('ats', ats);
+                    formData.append('priority', priority);
+
+                    try {
+                        const response = await fetch('{{ url_for("add_company") }}', {
+                            method: 'POST',
+                            headers: {
+                                'X-Requested-With': 'XMLHttpRequest',
+                            },
+                            body: formData,
+                        });
+
+                        if (response.ok) {
+                            successCount++;
+                        } else {
+                            failureCount++;
+                            failedTokens.push(token);
+                        }
+                    } catch (error) {
+                        failureCount++;
+                        failedTokens.push(token);
+                    }
+                }
+
+                if (successCount > 0) {
+                    showToast(
+                        `✓ Successfully added ${successCount} ${successCount === 1 ? 'company' : 'companies'}`,
+                        'success'
+                    );
+                    bulkTextarea.value = '';
+                }
+                
+                if (failureCount > 0) {
+                    showToast(
+                        `⚠ Failed to add ${failureCount} ${failureCount === 1 ? 'entry' : 'entries'}`,
+                        'error'
+                    );
+                }
+            } else {
+                // Single mode: create one entry
+                const token = singleInput.value.trim();
+                
+                if (!token) {
+                    showToast('Please enter a board token/URL', 'error');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Save Company';
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('board_token', token);
+                formData.append('ats', ats);
+                formData.append('priority', priority);
+
+                const response = await fetch('{{ url_for("add_company") }}', {
+                    method: 'POST',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    body: formData,
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showToast(data.message, 'success');
+                    form.reset();
+                    // Reset toggle to single mode
+                    if (bulkModeToggle.checked) {
+                        bulkModeToggle.checked = false;
+                        bulkModeToggle.dispatchEvent(new Event('change'));
+                    }
+                } else {
+                    showToast(data.message, 'error');
+                }
+            }
+        } catch (error) {
+            showToast('An unexpected error occurred', 'error');
+        } finally {
+            submitBtn.disabled = false;
+            const isBulk = bulkModeToggle.checked;
+            submitBtn.textContent = isBulk ? 'Save Companies' : 'Save Company';
+        }
+    });
+});
+</script>
 {% endblock %}

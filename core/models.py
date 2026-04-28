@@ -44,6 +44,7 @@ class Job:
     posted_at: Optional[str] = None
     remote: bool = False
     salary: Optional[str] = None
+    description: Optional[str] = None  # Job description (not stored in DB, used for notifications)
     raw: dict = field(default_factory=dict)  # original payload
 
     def short_repr(self) -> str:

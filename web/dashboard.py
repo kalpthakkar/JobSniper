@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, jsonify
 
 from core.config import Config
 from core.database import JobDatabase
@@ -34,6 +34,10 @@ def index():
     priorities = [p.value for p in Priority]
     return render_template('index.html', companies=companies, ats_types=ats_types, priorities=priorities, live_reload=True)
 
+# Default values for new company form
+DEFAULT_ATS = "workday"
+DEFAULT_PRIORITY = "MID"
+
 @app.route('/add-company', methods=['GET', 'POST'])
 def add_company():
     ats_types = [ats.value for ats in ATSType]
@@ -42,6 +46,20 @@ def add_company():
         board_token = request.form.get('board_token', '').strip()
         ats = request.form.get('ats', '').strip()
         priority = request.form.get('priority', '').strip()
+        
+        # If AJAX request, return JSON
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            if not board_token or not ats or not priority:
+                return {"status": "error", "message": "All fields are required"}, 400
+            try:
+                db.add_company(board_token, ats, priority)
+                logger.info(f"[ADD_COMPANY] Added {board_token} ({ats}, {priority})")
+                return {"status": "success", "message": f"Company added: {board_token}"}
+            except Exception as e:
+                logger.error(f"[ADD_COMPANY] Error adding company: {e}")
+                return {"status": "error", "message": f"Error adding company: {str(e)}"}, 400
+        
+        # Regular form submission (for backwards compatibility)
         if board_token and ats and priority:
             db.add_company(board_token, ats, priority)
         return redirect(url_for('index'))
@@ -50,6 +68,8 @@ def add_company():
         'add_company.html',
         ats_types=ats_types,
         priorities=priorities,
+        default_ats=DEFAULT_ATS,
+        default_priority=DEFAULT_PRIORITY,
     )
 
 @app.route('/notify', methods=['GET', 'POST'])
@@ -58,12 +78,44 @@ def notify_settings():
     default_config = {
         "enabled": False,
         "job_title": {"enabled": False, "rules": []},
+        "blacklist_job_title": {"enabled": False, "rules": []},
         "company_name": {"enabled": False, "rules": []},
+        "blacklist_company_name": {"enabled": False, "rules": []},
         "location": {"enabled": False, "rules": []},
-        "blacklist": {"enabled": False, "rules": []},
+        "blacklist_location": {"enabled": False, "rules": []},
     }
 
     if request.method == 'POST':
+        # Handle AJAX JSON requests
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            try:
+                data = request.get_json()
+                if isinstance(data, dict):
+                    # Validate and remove duplicates from each section
+                    for section_key in ['job_title', 'blacklist_job_title', 'company_name', 
+                                       'blacklist_company_name', 'location', 'blacklist_location']:
+                        if section_key in data and isinstance(data[section_key], dict):
+                            rules = data[section_key].get('rules', [])
+                            if isinstance(rules, list):
+                                # Remove duplicates, keeping first occurrence
+                                seen = set()
+                                unique_rules = []
+                                for rule in rules:
+                                    if isinstance(rule, dict):
+                                        rule_key = (rule.get('value', ''), rule.get('match', ''), rule.get('case_sensitive', False))
+                                        if rule_key not in seen and rule_key[0]:  # Skip empty values
+                                            seen.add(rule_key)
+                                            unique_rules.append(rule)
+                                data[section_key]['rules'] = unique_rules
+                    
+                    db.save_notification_config(data)
+                    return jsonify({"status": "success", "message": "Rules saved successfully (duplicates removed)"})
+                else:
+                    return jsonify({"status": "error", "message": "Invalid configuration format"}), 400
+            except Exception as e:
+                return jsonify({"status": "error", "message": str(e)}), 400
+        
+        # Handle traditional form submissions
         raw_config = request.form.get('notification_config', '{}')
         try:
             parsed = json.loads(raw_config)
@@ -76,9 +128,11 @@ def notify_settings():
     final_config = {
         "enabled": config_value.get("enabled", default_config["enabled"]),
         "job_title": {**default_config["job_title"], **config_value.get("job_title", {})},
+        "blacklist_job_title": {**default_config["blacklist_job_title"], **config_value.get("blacklist_job_title", {})},
         "company_name": {**default_config["company_name"], **config_value.get("company_name", {})},
+        "blacklist_company_name": {**default_config["blacklist_company_name"], **config_value.get("blacklist_company_name", {})},
         "location": {**default_config["location"], **config_value.get("location", {})},
-        "blacklist": {**default_config["blacklist"], **config_value.get("blacklist", {})},
+        "blacklist_location": {**default_config["blacklist_location"], **config_value.get("blacklist_location", {})},
     }
     return render_template('notify.html', config=final_config)
 
@@ -113,13 +167,68 @@ def toggle_notification_channel():
 def update(board_token):
     ats = request.form['ats']
     priority = request.form['priority']
+    
+    # Check if this is an AJAX request
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        try:
+            db.update_company(board_token, ats, priority)
+            logger.info(f"[UPDATE_COMPANY] {board_token} → ATS:{ats}, Priority:{priority}")
+            return {"status": "success", "message": f"Updated {board_token}"}
+        except Exception as e:
+            logger.error(f"[UPDATE_COMPANY] Error updating {board_token}: {e}")
+            return {"status": "error", "message": str(e)}, 400
+    
+    # Regular form submission (backward compatibility)
     db.update_company(board_token, ats, priority)
     return redirect(url_for('index'))
 
-@app.route('/delete/<path:board_token>')
+@app.route('/delete/<path:board_token>', methods=['POST'])
 def delete(board_token):
+    # Check if this is an AJAX request
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        try:
+            db.delete_company(board_token)
+            logger.info(f"[DELETE_COMPANY] Deleted {board_token}")
+            return {"status": "success", "message": f"Deleted {board_token}"}
+        except Exception as e:
+            logger.error(f"[DELETE_COMPANY] Error deleting {board_token}: {e}")
+            return {"status": "error", "message": str(e)}, 400
+    
+    # Regular form submission (backward compatibility)
     db.delete_company(board_token)
     return redirect(url_for('index'))
+
+@app.route('/preferences', methods=['GET', 'POST'])
+def preferences():
+    """User job preferences page (clearance, salary range, etc)."""
+    if request.method == 'GET':
+        # Check if JSON format requested (for AJAX data loading)
+        if request.args.get('format') == 'json':
+            prefs = db.get_preferences()
+            return {"preferences": prefs}
+        
+        # Return HTML page
+        return render_template('preferences.html', current_preferences=db.get_preferences())
+    
+    if request.method == 'POST':
+        # Check if AJAX request
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            try:
+                data = request.get_json()
+                if not data:
+                    return {"status": "error", "message": "No data provided"}, 400
+                
+                db.save_preferences(data)
+                logger.info(f"[PREFERENCES] Saved: {data}")
+                return {"status": "success", "message": "Preferences saved"}
+            except Exception as e:
+                logger.error(f"[PREFERENCES] Error saving: {e}")
+                return {"status": "error", "message": str(e)}, 400
+        
+        # Regular form submission
+        data = request.form.to_dict()
+        db.save_preferences(data)
+        return redirect(url_for('preferences'))
 
 @app.route("/settings")
 def settings():
@@ -132,7 +241,7 @@ def settings():
     
     # Load company-specific enabled status from database
     company_enabled = {}
-    for company in ["google", "tesla"]:
+    for company in ["google", "tesla", "apple", "microsoft"]:
         setting = db.get_setting(f"company_{company}")
         if setting is None:
             # Initialize to "true" if never set
@@ -164,7 +273,7 @@ def toggle_ats(ats_type):
 def toggle_company(company_key):
     data = request.get_json()
     enabled = data.get("enabled", True)
-    if company_key in ["google", "tesla"]:
+    if company_key in ["google", "tesla", "apple", "microsoft"]:
         key = f"company_{company_key}"
         value = "true" if enabled else "false"
         db.set_setting(key, value)
@@ -191,7 +300,7 @@ def debug_settings():
         settings[key] = value
     
     # Get company settings
-    for company in ["google", "tesla"]:
+    for company in ["google", "tesla", "apple", "microsoft"]:
         key = f"company_{company}"
         value = db.get_setting(key)
         # Convert to boolean for consistency (None/"true"/"false" -> True/False)
@@ -240,10 +349,10 @@ def stats():
             'adapter_type': 'ats',
         })
     
-    # Add company-specific adapters (Google, Tesla)
+    # Add company-specific adapters (Google, Tesla, Apple, Microsoft)
     # Note: Company-specific adapters are standalone adapters (total=1), not collections
     # of companies, so we don't count individual companies or track priorities.
-    for company_name in ["google", "tesla"]:
+    for company_name in ["google", "tesla", "apple", "microsoft"]:
         # Get company enabled status
         setting = db.get_setting(f"company_{company_name}")
         is_enabled = setting != "false"

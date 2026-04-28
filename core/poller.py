@@ -437,9 +437,10 @@ class PollOrchestrator:
                     # All companies cooling down — sleep until soonest is ready
                     with self._scheduler_lock:
                         sleep_for = self.scheduler.soonest_ready_in()
-                    if sleep_for > 0.01:
-                        logger.debug(f"Dispatcher: all in cooldown, sleeping {sleep_for:.2f}s")
-                        self._stop.wait(sleep_for)  # interruptible
+                    # Always sleep at least 0.1s to avoid busy-looping when scheduler is empty
+                    sleep_for = max(sleep_for, 0.1)
+                    logger.debug(f"Dispatcher: no work available, sleeping {sleep_for:.2f}s")
+                    self._stop.wait(sleep_for)  # interruptible
                     continue
 
                 try:
@@ -462,6 +463,13 @@ class PollOrchestrator:
         with self._heartbeat_lock:
             self._last_polled_company = company.name
             self._polls_since_heartbeat += 1
+        
+        # Frequency inspection: Log when a specific board token is polled
+        if (self.config.frequency_inspection_enabled and 
+            self.config.frequency_inspect_board_token and
+            company.board_token == self.config.frequency_inspect_board_token):
+            logger.info(f"[FREQ_INSPECT] {company.board_token} dispatched (slot #{self._polls_since_heartbeat})")
+        
         try:
             # Check if this company's ATS is still enabled
             # (it might have been disabled between scheduler.next_company() and now)

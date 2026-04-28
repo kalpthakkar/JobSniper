@@ -29,6 +29,7 @@ import requests
 
 from core.models import Job, Company
 from core.http_client import HttpClient
+from core.description_parser import parse_html_description
 
 logger = logging.getLogger("job_sniper.ats.greenhouse")
 
@@ -132,6 +133,10 @@ def extract_new_jobs(
         # Salary is rarely in Greenhouse public API, mark as None
         salary: Optional[str] = None
 
+        # Parse job description from HTML content
+        raw_html_content = raw.get("content", "")
+        description = parse_html_description(raw_html_content)
+
         new_jobs.append(Job(
             id=job_id,
             title=raw.get("title", "Untitled"),
@@ -142,6 +147,7 @@ def extract_new_jobs(
             posted_at=raw.get("updated_at"),
             remote="remote" in location.lower(),
             salary=salary,
+            description=description,
             raw=raw,
         ))
 
