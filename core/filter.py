@@ -58,14 +58,29 @@ def apply_notification_filters(jobs: List[Job], db: Optional[Any] = None) -> Lis
         if not value:
             return False
         case_sensitive = bool(rule.get("case_sensitive", False))
+        whole_word = bool(rule.get("whole_word", False))
         text = normalize(text or "", case_sensitive)
         pattern = normalize(value, case_sensitive)
         match_type = rule.get("match", "includes")
-        if match_type == "starts_with":
-            return text.startswith(pattern)
-        if match_type == "ends_with":
-            return text.endswith(pattern)
-        return pattern in text
+        
+        if whole_word:
+            # Use word boundaries for whole word matching
+            import re
+            escaped_pattern = re.escape(pattern)
+            if match_type == "starts_with":
+                regex_pattern = r'^\b' + escaped_pattern + r'\b'
+            elif match_type == "ends_with":
+                regex_pattern = r'\b' + escaped_pattern + r'\b$'
+            else:  # includes
+                regex_pattern = r'\b' + escaped_pattern + r'\b'
+            return bool(re.search(regex_pattern, text))
+        else:
+            # Original substring matching
+            if match_type == "starts_with":
+                return text.startswith(pattern)
+            if match_type == "ends_with":
+                return text.endswith(pattern)
+            return pattern in text
 
     def section_passes_inclusive(text: str, section: dict) -> bool:
         """Inclusive filter: exclude if none of the rules match (OR logic)."""

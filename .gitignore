@@ -113,6 +113,7 @@ coverage.xml
 /test_*
 /scratch/
 /tmp/
+parser/*.txt
 
 # ============================================================
 # External / Third-party directories

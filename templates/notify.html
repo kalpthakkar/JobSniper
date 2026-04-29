@@ -145,10 +145,8 @@
     }
 
     .section-toggle {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
         flex-shrink: 0;
+        min-width: 70px;
     }
 
     /* Search and Pagination Controls */
@@ -218,7 +216,7 @@
 
     /* Rules List Container */
     .rules-list-container {
-        padding: 0 1.5rem;
+        padding: 0;
         min-height: 200px;
         max-height: 400px;
         display: flex;
@@ -276,11 +274,11 @@
     /* Rule Row */
     .rule-row {
         display: grid;
-        grid-template-columns: 1fr 140px 140px 90px;
-        gap: 0.8rem;
+        grid-template-columns: 1.5fr 120px 120px 120px 80px;
+        gap: 0.6rem;
         align-items: center;
         padding: 0.8rem;
-        margin-right: 1%;
+        margin: 0 1.5rem;
         background: var(--surface-strong);
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -294,20 +292,21 @@
 
     .rule-row input,
     .rule-row select {
-        padding: 0.5rem;
+        padding: 0.4rem 0.5rem;
         border: 1px solid var(--border);
         border-radius: 4px;
         font-size: 0.85rem;
         background: var(--surface);
         color: var(--text);
         font-family: inherit;
+        height: 36px; /* Fixed height to match toggle buttons */
+        box-sizing: border-box;
     }
 
     .rule-row input:focus,
     .rule-row select:focus {
         outline: none;
-        border-color: none;
-        /* box-shadow: 0 0 0 3px rgba(39, 110, 241, 0.1); */
+        /* border-color: var(--accent); */
     }
 
     .rule-value {
@@ -319,24 +318,61 @@
     }
 
     .toggle-label {
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
+        display: inline-block;
         cursor: pointer;
+        border: 1px solid #d1d5db;
+        padding: 0.4rem 0.8rem;
+        margin-bottom: 0px;
+        border-radius: 0.375rem;
+        background: white;
+        color: #374151;
+        font-size: 0.85rem;
+        transition: all 0.15s ease;
         user-select: none;
         white-space: nowrap;
-        font-size: 0.85rem;
+        text-align: center;
+        min-width: 80px;
+        height: 36px; /* Fixed height to match inputs */
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     .toggle-label input[type="checkbox"] {
-        cursor: pointer;
-        width: auto;
+        display: none;
+    }
+
+    .toggle-label.checked {
+        background: #2563eb;
+        color: white;
+        border-color: #2563eb;
     }
 
     .btn.btn-secondary {
+        display: inline-block;
+        cursor: pointer;
+        border: 1px solid #dc3545;
         padding: 0.4rem 0.8rem;
-        font-size: 0.8rem;
-        height: fit-content;
+        border-radius: 0.375rem;
+        background: white;
+        color: #dc3545;
+        font-size: 0.85rem;
+        transition: all 0.15s ease;
+        user-select: none;
+        white-space: nowrap;
+        text-align: center;
+        min-width: 80px;
+        height: 36px; /* Fixed height to match others */
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .btn.btn-secondary:hover {
+        background: #dc3545;
+        color: white;
     }
 
     /* Pagination Controls */
@@ -423,7 +459,8 @@
     /* Responsive */
     @media (max-width: 1024px) {
         .rule-row {
-            grid-template-columns: 1fr 120px 120px 80px;
+            grid-template-columns: 1.5fr 100px 100px 100px 70px;
+            gap: 0.5rem;
         }
 
         .rules-controls {
@@ -439,22 +476,38 @@
             width: 100%;
             justify-content: center;
         }
+
+        .toggle-label {
+            min-width: 75px;
+        }
+
+        .btn.btn-secondary {
+            min-width: 75px;
+        }
     }
 
     @media (max-width: 640px) {
         .rule-row {
-            grid-template-columns: 1fr 80px;
+            grid-template-columns: 1fr;
             gap: 0.5rem;
         }
 
         .rule-value {
-            grid-column: 1 / -1;
+            width: 100%;
+        }
+
+        .rule-row input,
+        .rule-row select {
+            height: 32px; /* Smaller height for mobile */
         }
 
         .rule-match,
-        .toggle-label {
+        .toggle-label,
+        .btn.btn-secondary {
             font-size: 0.75rem;
-            padding: 0.4rem;
+            padding: 0.3rem 0.6rem;
+            min-width: 70px;
+            height: 32px; /* Smaller height for mobile */
         }
 
         .pagination-controls {

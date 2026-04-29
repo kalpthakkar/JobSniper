@@ -52,13 +52,14 @@ function initSectionState(sectionKey) {
     }
 }
 
-function isRuleDuplicate(value, match, caseSensitive, existingRules, currentIndex) {
+function isRuleDuplicate(value, match, caseSensitive, wholeWord, existingRules, currentIndex) {
     return existingRules.some((rule, idx) => {
         // Don't compare rule with itself
         if (idx === currentIndex) return false;
         return rule.value === value &&
                rule.match === match &&
-               rule.case_sensitive === caseSensitive;
+               rule.case_sensitive === caseSensitive &&
+               rule.whole_word === wholeWord;
     });
 }
 
@@ -94,6 +95,29 @@ function createRuleRow(sectionKey, rule, index, sectionData, container) {
     caseToggle.checked = Boolean(rule.case_sensitive);
     caseWrapper.appendChild(caseToggle);
     caseWrapper.appendChild(document.createTextNode('Case sensitive'));
+    
+    // Update label class based on checkbox state
+    const updateCaseLabel = () => {
+        caseWrapper.classList.toggle('checked', caseToggle.checked);
+    };
+    caseToggle.addEventListener('change', updateCaseLabel);
+    updateCaseLabel(); // Initial state
+
+    const wordWrapper = document.createElement('label');
+    wordWrapper.className = 'toggle-label';
+    const wordToggle = document.createElement('input');
+    wordToggle.type = 'checkbox';
+    wordToggle.className = 'rule-word';
+    wordToggle.checked = Boolean(rule.whole_word);
+    wordWrapper.appendChild(wordToggle);
+    wordWrapper.appendChild(document.createTextNode('Is Word'));
+    
+    // Update label class based on checkbox state
+    const updateWordLabel = () => {
+        wordWrapper.classList.toggle('checked', wordToggle.checked);
+    };
+    wordToggle.addEventListener('change', updateWordLabel);
+    updateWordLabel(); // Initial state
 
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
@@ -104,7 +128,8 @@ function createRuleRow(sectionKey, rule, index, sectionData, container) {
         const ruleIndex = sectionData.rules.findIndex(r =>
             r.value === rule.value &&
             r.match === rule.match &&
-            r.case_sensitive === rule.case_sensitive
+            r.case_sensitive === rule.case_sensitive &&
+            r.whole_word === rule.whole_word
         );
         if (ruleIndex > -1) {
             sectionData.rules.splice(ruleIndex, 1);
@@ -119,8 +144,9 @@ function createRuleRow(sectionKey, rule, index, sectionData, container) {
         const value = nameInput.value;
         const match = matchSelect.value;
         const caseSensitive = caseToggle.checked;
+        const wholeWord = wordToggle.checked;
         
-        if (value && isRuleDuplicate(value, match, caseSensitive, sectionData.rules, index)) {
+        if (value && isRuleDuplicate(value, match, caseSensitive, wholeWord, sectionData.rules, index)) {
             nameInput.style.borderColor = '#dc3545';
             nameInput.style.backgroundColor = '#fff5f5';
             nameInput.title = 'This rule already exists';
@@ -135,10 +161,12 @@ function createRuleRow(sectionKey, rule, index, sectionData, container) {
     nameInput.addEventListener('input', updateDuplicateState);
     matchSelect.addEventListener('change', updateDuplicateState);
     caseToggle.addEventListener('change', updateDuplicateState);
+    wordToggle.addEventListener('change', updateDuplicateState);
 
     row.appendChild(nameInput);
     row.appendChild(matchSelect);
     row.appendChild(caseWrapper);
+    row.appendChild(wordWrapper);
     row.appendChild(removeButton);
     return row;
 }
@@ -270,9 +298,13 @@ function renderSection(sectionKey, sectionData) {
     checkbox.checked = Boolean(sectionData.enabled);
     checkbox.addEventListener('change', () => {
         container.classList.toggle('disabled', !checkbox.checked);
+        toggle.classList.toggle('checked', checkbox.checked);
     });
     toggle.appendChild(checkbox);
     toggle.appendChild(document.createTextNode(`Enable`));
+    
+    // Set initial state
+    toggle.classList.toggle('checked', checkbox.checked);
 
     header.appendChild(headerInfo);
     header.appendChild(toggle);
@@ -418,7 +450,8 @@ function gatherConfig() {
             .map(rule => ({
                 value: normalizeConfigValue(rule.value),
                 match: rule.match,
-                case_sensitive: rule.case_sensitive
+                case_sensitive: rule.case_sensitive,
+                whole_word: rule.whole_word
             }))
             .filter(rule => rule.value) // Only include rules with non-empty values
             .filter((rule, idx, arr) => {
@@ -426,7 +459,8 @@ function gatherConfig() {
                 const firstIdx = arr.findIndex(r =>
                     r.value === rule.value &&
                     r.match === rule.match &&
-                    r.case_sensitive === rule.case_sensitive
+                    r.case_sensitive === rule.case_sensitive &&
+                    r.whole_word === rule.whole_word
                 );
                 return idx === firstIdx;
             });
@@ -559,12 +593,14 @@ function setupForm() {
                         const value = row.querySelector('.rule-value').value;
                         const match = row.querySelector('.rule-match').value;
                         const caseSensitive = row.querySelector('.rule-case').checked;
+                        const wholeWord = row.querySelector('.rule-word').checked;
                         
                         // Update the rule if it exists
                         if (sectionData.rules[index]) {
                             sectionData.rules[index].value = value;
                             sectionData.rules[index].match = match;
                             sectionData.rules[index].case_sensitive = caseSensitive;
+                            sectionData.rules[index].whole_word = wholeWord;
                         }
                     }
                 });
@@ -599,7 +635,7 @@ function setupForm() {
         })
         .then(data => {
             if (data.status === 'success') {
-                showToast('✓ Rules saved successfully!', 'success', 3000);
+                showToast('Rules saved successfully!', 'success', 3000);
             } else {
                 showToast('✕ Failed to save rules: ' + (data.message || 'Unknown error'), 'error', 5000);
             }

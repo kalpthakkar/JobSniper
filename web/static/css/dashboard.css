@@ -379,7 +379,7 @@ select {
 
 .rule-row input[type="text"],
 .rule-row select {
-    min-height: 44px;
+    min-height: unset;
 }
 
 .rule-row button {
