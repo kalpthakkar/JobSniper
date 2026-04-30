@@ -7,7 +7,7 @@ system:
   max_workers: 20
 
   # NOTE: Polling intervals are now managed by PriorityScheduler with adaptive weighting
-  # HIGH:MID:LOW = 12:3:1 slots per cycle. No fixed intervals — frequencies emerge naturally.
+  # HIGH:MID:LOW = 3:2:1 slots per cycle. No fixed intervals — frequencies emerge naturally.
 
   # IP rotation strategy: none | rotating_proxies | tor | user_agent_rotation
   ip_strategy: user_agent_rotation
