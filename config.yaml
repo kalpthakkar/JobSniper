@@ -1,13 +1,19 @@
 # ============================================================
-# JOB SNIPER — Master Configuration
+# JOB SNIPER — Master Configuration (Phase 1-2 Optimizations)
 # ============================================================
 
 system:
   # Max parallel polling threads
-  max_workers: 20
+  # OPTIMIZATION: Increased from 20 to 40 for higher throughput
+  # With 40 workers and 0.5s avg poll time: 40 * 2 = 80 polls/sec theoretical max
+  # Practical: 60-70 polls/sec (with network variance)
+  max_workers: 5
 
   # NOTE: Polling intervals are now managed by PriorityScheduler with adaptive weighting
   # HIGH:MID:LOW = 3:2:1 slots per cycle. No fixed intervals — frequencies emerge naturally.
+  # OPTIMIZATION: base_gap_s reduced from 0.1 → 0.05 in scheduler.py (Phase 1)
+  # OPTIMIZATION: max_gap_s reduced from 5.0 → 3.0 in scheduler.py (Phase 1)
+  # OPTIMIZATION: per-ATS rate limiting enables independent backoff (Phase 2)
 
   # IP rotation strategy: none | rotating_proxies | tor | user_agent_rotation
   ip_strategy: user_agent_rotation
@@ -16,22 +22,33 @@ system:
   proxy_file: proxies.txt   # optional; leave blank to disable
 
   # Database file path (local SQLite store)
+  # ARCHITECTURE CHOICE: SQLite is optimal for local deployments
+  # - Avoids remote DB latency (10-50ms per query → 500ms-2.5s per full cycle with 1000+ companies)
+  # - No network costs (crucial with 8000+ tokens polled frequently)
+  # - Handles R/W contention via thread-safe locking (RLock in database.py)
+  # - Local transaction speed << remote DB RPC overhead
   db_path: data/job_db.db
 
   # Log level: DEBUG | INFO | WARNING | ERROR
   log_level: INFO
 
-  # Request timeout in seconds (increased from 10 to handle slow APIs)
-  request_timeout: 30
+  # Request timeout in seconds
+  # CRITICAL: This blocks worker threads. With 40 workers and 30s timeout,
+  # if 20% of requests timeout, all 8 workers are blocked for 30s → zero polls happen.
+  # Reduced from 30s to 5s to prevent worker thread starvation.
+  # Slow endpoints will fail fast and retry from queue rather than blocking entire pool.
+  request_timeout: 5
 
   # Max retries per request before marking company as temporarily unavailable
-  max_retries: 3
+  # Reduced from 3 to 1: with 5s timeout, 1 retry (2 attempts = 10s) is enough.
+  # Prevents any single request from blocking worker for long.
+  # Failed requests are queued again by scheduler anyway.
+  max_retries: 1
 
   # Delay between retries (seconds)
-  retry_delay: 0.5       # urllib3 backoff_factor for 5xx retries. Keep small — large values
-                         # cause thread-blocking: delay = backoff_factor * 2^attempt.
-                         # With 0.5: retries wait 0.5s, 1s, 2s = 3.5s max.
-                         # Old value of 2 caused 2s+4s+8s = 14s blocking per failed request.
+  # With request_timeout=5s, retries are fast. Keep this minimal so workers
+  # recover quickly from timeouts and move to next request
+  retry_delay: 0.1
 
   # Google Careers polling
   google_enabled: true

@@ -369,5 +369,89 @@ def stats():
     
     return render_template('stats.html', ats_stats=ats_stats)
 
+# ─────────────────────────────────────────────────────────────
+# NEW: Failure Monitoring & Incident Response (Phase 3)
+# ─────────────────────────────────────────────────────────────
+
+@app.route('/failures')
+def failures():
+    """Failure monitoring dashboard — shows recent failed tokens."""
+    return render_template('failed_tokens.html')
+
+@app.route('/api/failed-tokens', methods=['GET'])
+def api_get_failed_tokens():
+    """Get recent failed tokens (last 100) for monitoring dashboard."""
+    try:
+        limit = request.args.get('limit', default=100, type=int)
+        failures = db.get_recent_failures(limit=limit)
+        return jsonify({
+            "status": "success",
+            "data": failures,
+            "count": len(failures)
+        })
+    except Exception as e:
+        logger.error(f"[API] Error getting failed tokens: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/failures/stats', methods=['GET'])
+def api_get_failure_stats():
+    """Get failure statistics and summary."""
+    try:
+        stats = db.get_failure_stats()
+        return jsonify({
+            "status": "success",
+            "data": stats
+        })
+    except Exception as e:
+        logger.error(f"[API] Error getting failure stats: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/failed-tokens/delete', methods=['DELETE'])
+def api_delete_failed_token():
+    """Delete a failed token from the system (incident response)."""
+    try:
+        data = request.get_json()
+        board_token = data.get('board_token')
+        ats = data.get('ats')
+        
+        if not board_token or not ats:
+            return jsonify({"status": "error", "message": "board_token and ats required"}), 400
+        
+        # Delete from companies, jobs, and clear failure record
+        db.delete_company(board_token)
+        db.clear_failure(board_token, ats)
+        
+        logger.info(f"[INCIDENT] Deleted token: {board_token} ({ats})")
+        return jsonify({
+            "status": "success",
+            "message": f"Deleted {board_token} from monitoring"
+        })
+    except Exception as e:
+        logger.error(f"[API] Error deleting token: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/failed-tokens/clear-failure', methods=['POST'])
+def api_clear_failure():
+    """Clear failure record for a token (e.g., after manual fix)."""
+    try:
+        data = request.get_json()
+        board_token = data.get('board_token')
+        ats = data.get('ats')
+        
+        if not board_token or not ats:
+            return jsonify({"status": "error", "message": "board_token and ats required"}), 400
+        
+        # Clear failure record (allows immediate retry)
+        db.clear_failure(board_token, ats)
+        
+        logger.info(f"[INCIDENT] Cleared failure: {board_token} ({ats})")
+        return jsonify({
+            "status": "success",
+            "message": f"Cleared failures for {board_token}"
+        })
+    except Exception as e:
+        logger.error(f"[API] Error clearing failure: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True)

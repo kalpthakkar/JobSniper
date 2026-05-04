@@ -56,9 +56,10 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
     """
     url = schema["base_url"].format(board_token=company.board_token)
     params = schema.get("params", {})
+    timeout = schema.get("timeout", 10)
 
     try:
-        resp = http.get(url, params=params)
+        resp = http.get(url, params=params, timeout=timeout)
         data = resp.json()
         jobs = data.get("jobs", [])
         # Filter to jobs published in past 24 hours (or all if filter disabled)
@@ -84,9 +85,10 @@ def extract_new_jobs(
     """
     url = schema["base_url"].format(board_token=company.board_token)
     params = schema.get("params", {})
+    timeout = schema.get("timeout", 10)
 
     try:
-        resp = http.get(url, params=params)
+        resp = http.get(url, params=params, timeout=timeout)
         data = resp.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"[Workable] extract_new_jobs failed for {company.name}: {e}")

@@ -10,9 +10,11 @@ Usage:
 """
 import argparse
 import logging
+import logging.handlers
 import sys
 from pathlib import Path
 from typing import List
+import queue
 import yaml
 
 from core.config import Config
@@ -30,19 +32,74 @@ logger = logging.getLogger("job_sniper")
 
 
 # ─────────────────────────────────────────────────────────────
-# Logging setup
+# Logging setup (thread-safe with queue handler)
 # ─────────────────────────────────────────────────────────────
+class NonBlockingQueueHandler(logging.handlers.QueueHandler):
+    """
+    Drop log records silently when the queue is full instead of blocking.
+
+    The default QueueHandler.emit() calls queue.put() which BLOCKS when the
+    queue is at capacity.  With 20+ worker threads all logging at INFO level
+    across 8000+ companies, the bounded queue fills quickly; every thread then
+    blocks inside logging, the ThreadPoolExecutor saturates, the dispatcher
+    stalls, and the whole program freezes indefinitely.
+
+    By switching to put_nowait() and discarding on Full we ensure worker threads
+    are never stalled by the logging subsystem.  A counter tracks dropped records
+    so we can surface the information without re-blocking.
+    """
+
+    _dropped: int = 0
+
+    def enqueue(self, record: logging.LogRecord) -> None:  # type: ignore[override]
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            NonBlockingQueueHandler._dropped += 1
+            # Every 1000 drops emit a single warning directly to stderr
+            # (bypassing the queue entirely so it always appears).
+            if NonBlockingQueueHandler._dropped % 1000 == 0:
+                import sys
+                print(
+                    f"[WARNING] Logging queue full — {NonBlockingQueueHandler._dropped} "
+                    "records dropped total. Consider reducing log verbosity.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+
 def setup_logging(level: str):
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     datefmt = "%H:%M:%S"
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format=fmt,
-        datefmt=datefmt,
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+    
+    # Configure stdout for line buffering
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
+    
+    # Use an unbounded queue so the listener never applies back-pressure.
+    # Memory cost is negligible: a log record is ~1 KB; even 50 000 queued
+    # records is only ~50 MB, far less than the RAM exhausted by blocking threads.
+    log_queue: queue.Queue = queue.Queue()  # unbounded — listener drains faster than workers produce
+    queue_handler = NonBlockingQueueHandler(log_queue)
+    
+    # Create a listener that drains the queue and writes to console
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    listener = logging.handlers.QueueListener(log_queue, stream_handler, respect_handler_level=True)
+    listener.start()
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root_logger.addHandler(queue_handler)
+    
+    # Suppress noisy but harmless urllib3 connection pool warnings
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
+    # Suppress per-request debug noise from these high-volume loggers
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    
+    return listener  # Return listener so we can stop it on shutdown
 
 
 # ─────────────────────────────────────────────────────────────
@@ -54,34 +111,49 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                      Start full monitoring loop
-  python main.py --config my.yaml     Use alternate config
-  python main.py --company stripe     One-shot probe Stripe (debug)
-  python main.py --list               Show all tracked companies
-  python main.py --dashboard          Run web dashboard
+  python main.py                                Start full monitoring loop
+  python main.py --config my.yaml               Use alternate config
+  python main.py --company stripe               One-shot probe Stripe (debug)
+  python main.py --list                         Show all tracked companies
+  python main.py --dashboard                    Run web dashboard
+  python main.py --token-start 0 --token-stop 4000    Multi-instance: poll tokens [0:4000]
+  python main.py --token-start 4000 --token-stop 8000 Multi-instance: poll tokens [4000:8000]
         """,
     )
     parser.add_argument("--config",  default="config.yaml", help="Path to config file")
     parser.add_argument("--company", default=None,          help="One-shot probe a single board_token")
     parser.add_argument("--list",    action="store_true",   help="List all companies in database and exit")
     parser.add_argument("--dashboard", action="store_true", help="Run web dashboard for company management")
+    parser.add_argument("--token-start", type=int, default=None, help="Token window start index (for multi-instance): polls companies[start:stop]")
+    parser.add_argument("--token-stop", type=int, default=None, help="Token window stop index (for multi-instance): polls companies[start:stop]")
     return parser.parse_args()
 
 
 # ─────────────────────────────────────────────────────────────
 # Filter companies by enabled ATS types
 # ─────────────────────────────────────────────────────────────
-def get_enabled_companies(companies: List[Company], db: JobDatabase) -> List[Company]:
+def get_enabled_companies(companies: List[Company], db: JobDatabase, token_start: int = None, token_stop: int = None) -> List[Company]:
     """
     Filter companies to only include those with enabled ATS types.
     Company is included only if:
     1. Company is enabled AND
     2. Its ATS type is enabled (settings stored in DB)
+    3. (Optional) Within token_start:token_stop window for multi-instance setup
     """
     enabled_companies = []
-    for company in companies:
+    
+    # First apply token window if specified (for multi-instance support)
+    if token_start is not None or token_stop is not None:
+        start = token_start or 0
+        stop = token_stop or len(companies)
+        windowed_companies = companies[start:stop]
+        logger.info(f"🪟 Token window enabled: [{start}:{stop}] of {len(companies)} total companies")
+    else:
+        windowed_companies = companies
+    
+    for company in windowed_companies:
         if not company.enabled:
-            logger.info(f"[FILTER] {company.name} ({company.ats.value}) — disabled (company flag)")
+            logger.debug(f"[FILTER] {company.name} ({company.ats.value}) — disabled (company flag)")
             continue
         
         # Check if this ATS type is enabled in settings
@@ -89,7 +161,7 @@ def get_enabled_companies(companies: List[Company], db: JobDatabase) -> List[Com
         is_ats_enabled = ats_setting != "false"  # Default to True if not set
         
         if not is_ats_enabled:
-            logger.info(f"[FILTER] {company.name} ({company.ats.value}) — disabled (ATS type disabled)")
+            logger.debug(f"[FILTER] {company.name} ({company.ats.value}) — disabled (ATS type disabled)")
             continue
         
         enabled_companies.append(company)
@@ -140,7 +212,7 @@ def main():
         sys.exit(1)
 
     config = Config(args.config)
-    setup_logging(config.log_level)
+    listener = setup_logging(config.log_level)
     logger = logging.getLogger("job_sniper.main")
 
     # Shared components
@@ -183,7 +255,8 @@ def main():
         sys.exit(0)
 
     # ------ Full monitoring loop ------
-    enabled_companies = get_enabled_companies(companies, db)
+    # Apply token window if specified (for multi-instance distributed setup)
+    enabled_companies = get_enabled_companies(companies, db, args.token_start, args.token_stop)
     google_enabled = db.get_setting("company_google") != "false"
     tesla_enabled = db.get_setting("company_tesla") != "false"
     apple_enabled = db.get_setting("company_apple") != "false"
@@ -246,7 +319,7 @@ def main():
         request_timeout=config.microsoft_request_timeout,
     )
     
-    orchestrator = PollOrchestrator(companies, config, db, http, notifier, google_poller, tesla_poller)
+    orchestrator = PollOrchestrator(companies, config, db, http, notifier, google_poller, tesla_poller, apple_poller, microsoft_poller)
 
     # Start Google, Tesla, and Apple pollers based on their settings (already checked for validation above)
     if google_enabled:
@@ -282,6 +355,7 @@ def main():
         tesla_poller.stop()
         apple_poller.stop()
         microsoft_poller.stop()
+        listener.stop()  # Drain remaining logs from queue
         logger.info("Job Sniper stopped.")
 
 

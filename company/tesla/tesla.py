@@ -232,18 +232,41 @@ class TeslaAdapter:
             logger.warning(f"[Tesla] Batch context initialization failed ({mode.value}): {e}")
             return results
 
-    def fetch_job_details_batch(self, job_urls: List[str]) -> Dict[str, Optional[Dict]]:
-        """Fetch detailed information for multiple jobs in a single browser context."""
+    def fetch_job_details_batch(self, job_urls: List[str], max_retries: int = 2) -> Dict[str, Optional[Dict]]:
+        """
+        Fetch detailed information for multiple jobs in a single browser context.
+        
+        Retries across browser modes with exponential backoff.
+        
+        Args:
+            job_urls: List of job URLs to fetch
+            max_retries: Number of retry attempts across modes
+            
+        Returns:
+            Dict mapping job_url -> job details (or None if not fetched)
+        """
         if not job_urls:
             return {}
 
-        for mode in [BrowserMode.HEADLESS, BrowserMode.HEADED]:
-            results = self._fetch_job_details_batch_mode(job_urls, mode)
-            if any(value is not None for value in results.values()):
-                return results
-            logger.warning(f"[Tesla] No valid job detail payloads in {mode.value} mode; falling back")
-            time.sleep(1)
+        for retry in range(max_retries):
+            for mode in [BrowserMode.HEADLESS, BrowserMode.HEADED]:
+                results = self._fetch_job_details_batch_mode(job_urls, mode)
+                successful_count = sum(1 for v in results.values() if v is not None)
+                
+                if successful_count > 0:
+                    logger.info(f"[Tesla] Successfully fetched {successful_count}/{len(job_urls)} job details ({mode.value})")
+                    return results
+                
+                logger.warning(f"[Tesla] No valid job detail payloads in {mode.value} mode (attempt {retry + 1}/{max_retries})")
+            
+            # Wait before retry
+            if retry < max_retries - 1:
+                wait_time = 2 ** (retry + 1)  # Exponential backoff: 2s, 4s
+                logger.debug(f"[Tesla] Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
 
+        # All retries exhausted
+        logger.warning(f"[Tesla] Failed to fetch job details after {max_retries} retry attempt(s) across all modes")
         return results
     @staticmethod
     def _normalize_jobs(jobs_list: List[Dict]) -> List[Dict]:

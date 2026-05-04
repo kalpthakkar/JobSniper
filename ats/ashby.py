@@ -116,21 +116,36 @@ _REST_URL = "https://api.ashbyhq.com/posting-api/job-board/{board_token}"
 
 _ASHBY_GQL_MAX_RPS = 2
 _ASHBY_GQL_MIN_INTERVAL = 1.0 / _ASHBY_GQL_MAX_RPS
+
+# ── Non-blocking token-bucket rate limiter ────────────────────────────────────
+# The old implementation held the lock DURING the sleep.  With 20+ worker
+# threads competing, one thread slept inside the lock while the other 19 piled
+# up waiting — starving the ThreadPoolExecutor and causing the freeze after
+# ~500 polls.  Fix: stamp the next-available slot inside the lock, then sleep
+# OUTSIDE it so other threads can compute their own slots concurrently.
 _gql_lock = threading.Lock()
-_gql_last_call_at = 0.0
+_gql_last_call_at: float = 0.0
+_ASHBY_GQL_MAX_WAIT = 2.0  # hard cap: never sleep more than 2 s per call
 
 
 def _gql_throttle() -> None:
+    """Rate-limit GQL calls without holding the lock during sleep."""
     global _gql_last_call_at
     with _gql_lock:
         now = time.monotonic()
         wait = _ASHBY_GQL_MIN_INTERVAL - (now - _gql_last_call_at)
+        # Advance the timestamp optimistically so the next thread books the
+        # following slot rather than the same one.
         if wait > 0:
-            time.sleep(wait)
-        _gql_last_call_at = time.monotonic()
+            _gql_last_call_at = now + min(wait, _ASHBY_GQL_MAX_WAIT)
+        else:
+            _gql_last_call_at = now
+    # Sleep outside the lock.
+    if wait > 0:
+        time.sleep(min(wait, _ASHBY_GQL_MAX_WAIT))
 
 
-def _gql_fetch(company: Company, http: HttpClient) -> Optional[dict]:
+def _gql_fetch(company: Company, http: HttpClient, timeout: int) -> Optional[dict]:
     """
     Call Ashby's internal GraphQL endpoint with a minimal field set
     that is confirmed to exist on JobPostingBriefsWithIdsAndTeamId.
@@ -144,7 +159,7 @@ def _gql_fetch(company: Company, http: HttpClient) -> Optional[dict]:
     }
     _gql_throttle()
     try:
-        resp = http.post(_GQL_URL, json_body=payload)
+        resp = http.post(_GQL_URL, json_body=payload, timeout=timeout)
         body = resp.text.strip()
         if not body:
             logger.warning(f"[Ashby/GQL] Empty body for {company.name}")
@@ -172,7 +187,7 @@ def _gql_fetch(company: Company, http: HttpClient) -> Optional[dict]:
         return None
 
 
-def _rest_fetch(company: Company, http: HttpClient) -> Optional[dict]:
+def _rest_fetch(company: Company, http: HttpClient, timeout: int) -> Optional[dict]:
     """
     REST posting API — full payload including isRemote, publishedAt, jobUrl.
     Guards against empty / non-JSON body.
@@ -180,7 +195,7 @@ def _rest_fetch(company: Company, http: HttpClient) -> Optional[dict]:
     """
     url = _REST_URL.format(board_token=company.board_token)
     try:
-        resp = http.get(url, params={"includeCompensation": "true"})
+        resp = http.get(url, params={"includeCompensation": "true"}, timeout=timeout)
         body = resp.text.strip()
         if not body:
             logger.warning(
@@ -330,8 +345,9 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
 
     # 1. Try REST — full payload. This is the most stable endpoint and avoids
     #    the shared Ashby GraphQL rate limit hotspot for fetch/hash checks.
+    timeout = schema.get("timeout", 10)
     try:
-        rest_data = _rest_fetch(company, http)
+        rest_data = _rest_fetch(company, http, timeout=timeout)
         if rest_data is not None:
             raw_jobs  = _parse_rest_jobs(rest_data)
             # Filter to jobs published in past 24 hours (or all if filter disabled)
@@ -344,8 +360,9 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
         rate_limit_error = e
 
     # 2. Fallback: GQL only if REST failed entirely.
+    timeout = schema.get("timeout", 10)
     try:
-        gql_data = _gql_fetch(company, http)
+        gql_data = _gql_fetch(company, http, timeout=timeout)
         if gql_data is not None:
             raw_jobs  = _parse_gql_jobs(gql_data)
             ids       = sorted({str(j["id"]) for j in raw_jobs})
@@ -381,8 +398,9 @@ def extract_new_jobs(
     Args:
         disable_filter: If True, include all jobs regardless of publish date.
     """
+    timeout = schema.get("timeout", 10)
     # PRIMARY: REST gives us isRemote, publishedAt, jobUrl, salary, team
-    rest_data = _rest_fetch(company, http)
+    rest_data = _rest_fetch(company, http, timeout=timeout)
     if rest_data is not None:
         raw_jobs = _parse_rest_jobs(rest_data)
         # Filter to jobs published in past 24 hours (or all if filter disabled)
@@ -394,7 +412,7 @@ def extract_new_jobs(
         ]
 
     # FALLBACK: GQL — fewer fields but still usable
-    gql_data = _gql_fetch(company, http)
+    gql_data = _gql_fetch(company, http, timeout=timeout)
     if gql_data is not None:
         raw_jobs = _parse_gql_jobs(gql_data)
         teams    = {

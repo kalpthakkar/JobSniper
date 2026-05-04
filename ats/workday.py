@@ -128,13 +128,13 @@ def _ensure_path(path: str) -> str:
     return path if path.startswith("/") else "/" + path
 
 
-def _fetch_workday_page(http: HttpClient, url: str) -> str:
+def _fetch_workday_page(http: HttpClient, url: str, timeout: int) -> str:
     """Fetch Workday page with retry logic and proper headers."""
     headers = _build_page_headers()
     
     for attempt in range(MAX_RETRIES):
         try:
-            resp = http.get(url, headers=headers)
+            resp = http.get(url, headers=headers, timeout=timeout)
             resp.raise_for_status()
             html = resp.text
 
@@ -150,7 +150,7 @@ def _fetch_workday_page(http: HttpClient, url: str) -> str:
                         url = _get_origin(url) + redirect_url
                         # Add delay before redirect request
                         time.sleep(REQUEST_DELAY)
-                        resp = http.get(url, headers=headers)
+                        resp = http.get(url, headers=headers, timeout=timeout)
                         resp.raise_for_status()
                         html = resp.text
 
@@ -179,9 +179,10 @@ def _fetch_job_details(
     site: str,
     external_path: str,
     headers: dict,
+    timeout: int,
 ) -> dict:
     endpoint = f"{origin}/wday/cxs/{tenant}/{site}{_ensure_path(external_path)}"
-    resp = http.get(endpoint, headers=headers)
+    resp = http.get(endpoint, headers=headers, timeout=timeout)
     return resp.json()
 
 
@@ -190,8 +191,9 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
     if not url:
         raise ValueError("Workday company must provide a full Workday jobs page URL")
 
+    timeout = schema.get("timeout", 10)
     try:
-        html = _fetch_workday_page(http, url)
+        html = _fetch_workday_page(http, url, timeout=timeout)
         token = _extract_token(html)
         tenant, site = _extract_tenant_site(html)
 
@@ -222,7 +224,7 @@ def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool
             if offset > 0:
                 time.sleep(PAGINATION_DELAY)
             
-            res = http.post(api, json_body=payload, headers=headers)
+            res = http.post(api, json_body=payload, headers=headers, timeout=timeout)
             data = res.json()
             jobs = data.get("jobPostings", []) or []
 
@@ -258,8 +260,9 @@ def extract_new_jobs(
     if not url:
         return []
 
+    timeout = schema.get("timeout", 10)
     try:
-        html = _fetch_workday_page(http, url)
+        html = _fetch_workday_page(http, url, timeout=timeout)
         token = _extract_token(html)
         tenant, site = _extract_tenant_site(html)
 
@@ -287,7 +290,7 @@ def extract_new_jobs(
             if offset > 0:
                 time.sleep(PAGINATION_DELAY)
 
-            res = http.post(api, json_body=payload, headers=headers)
+            res = http.post(api, json_body=payload, headers=headers, timeout=timeout)
             data = res.json()
             jobs = data.get("jobPostings", []) or []
             todays = [job for job in jobs if str(job.get("postedOn", "")).strip() == "Posted Today"]
@@ -304,7 +307,7 @@ def extract_new_jobs(
                 
                 # Add delay before fetching job details
                 time.sleep(REQUEST_DELAY)
-                details = _fetch_job_details(http, origin, tenant, site, external_path, headers)
+                details = _fetch_job_details(http, origin, tenant, site, external_path, headers, timeout=timeout)
                 info = details.get("jobPostingInfo", {})
                 org = details.get("hiringOrganization", {})
                 job_url = info.get("externalUrl") or f"{origin}{_ensure_path(external_path)}"

@@ -18,6 +18,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
@@ -152,12 +153,12 @@ class AppleAdapter:
         
         return None
 
-    def fetch_total_pages(self) -> Optional[int]:
+    def fetch_total_pages(self) -> Optional[tuple[int, int]]:
         """
-        Fetch first page to determine total number of pages.
+        Fetch first page to determine total number of pages and total records.
         
         Returns:
-            Total number of pages, or None on error
+            Tuple of (total_pages, total_records), or None on error
         """
         payload = {
             "query": "",
@@ -198,14 +199,18 @@ class AppleAdapter:
             total_records = data.get("res", {}).get("totalRecords", 0)
             total_pages = (total_records + JOBS_PER_PAGE - 1) // JOBS_PER_PAGE  # Ceiling division
             logger.debug(f"[apple] Total records: {total_records}, Total pages: {total_pages}")
-            return total_pages
+            return total_pages, total_records
         except Exception as e:
             logger.warning(f"[apple] Failed to fetch total pages: {e}")
             return None
 
     def fetch_all_recent_jobs(self, hours: int = 6) -> Tuple[List[Dict], int]:
         """
-        Fetch all jobs from the last N hours across all pages.
+        Fetch all jobs from the last N hours across pages with EARLY EXIT optimization.
+        
+        Since API returns jobs sorted by timestamp (newest first), we fetch pages
+        sequentially and EXIT as soon as we encounter a job older than N hours.
+        This prevents unnecessary API calls for pages containing only old jobs.
         
         Args:
             hours: Only include jobs posted within last N hours (default 6)
@@ -218,64 +223,69 @@ class AppleAdapter:
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         logger.info(f"[apple] Fetching jobs from last {hours} hours (cutoff: {cutoff_time.isoformat()})")
         
-        # Get total pages
-        total_pages = self.fetch_total_pages()
-        if total_pages is None:
+        # Get total pages and total records
+        result = self.fetch_total_pages()
+        if result is None:
             logger.error("[apple] Failed to determine total pages")
             return [], 0
         
-        logger.info(f"[apple] Total pages: {total_pages}")
+        total_pages, total_records = result
+        logger.info(f"[apple] Total pages: {total_pages}, Total records: {total_records}")
         
+        # Fetch pages sequentially with early exit optimization
         all_jobs = []
-        total_records = 0
-        jobs_outside_window = 0  # Track consecutive jobs outside time window
+        pages_fetched = 0
         
         for page in range(1, total_pages + 1):
-            page_jobs = self.fetch_page(page)
-            if page_jobs is None:
-                logger.warning(f"[apple] Failed to fetch page {page}, stopping")
-                break
-            
-            if not page_jobs:
-                logger.debug(f"[apple] Page {page} is empty, stopping")
-                break
-            
-            # Filter jobs by posting date (last 6 hours)
-            page_has_recent = False
-            for job in page_jobs:
-                post_date_gmt = job.get("postDateInGMT")
-                if post_date_gmt:
-                    try:
-                        # Parse ISO 8601 datetime
-                        job_time = datetime.fromisoformat(post_date_gmt.replace('Z', '+00:00'))
-                        if job_time >= cutoff_time:
+            try:
+                page_jobs = self.fetch_page(page)
+                if page_jobs is None:
+                    logger.debug(f"[apple] Page {page} failed to fetch")
+                    continue
+                
+                if not page_jobs:
+                    # Empty page — continue checking next pages
+                    continue
+                
+                pages_fetched += 1
+                page_cutoff_found = False  # Track if we found cutoff on this page
+                
+                # Filter jobs by posting date
+                for job in page_jobs:
+                    post_date_gmt = job.get("postDateInGMT")
+                    if post_date_gmt:
+                        try:
+                            job_time = datetime.fromisoformat(post_date_gmt.replace('Z', '+00:00'))
+                            if job_time >= cutoff_time:
+                                all_jobs.append(job)
+                            else:
+                                # Found a job older than cutoff — all remaining jobs will be older
+                                page_cutoff_found = True
+                                logger.debug(f"[apple] Cutoff reached on page {page}. Stopping pagination early.")
+                        except Exception as e:
+                            logger.debug(f"[apple] Failed to parse date for job {job.get('id')}: {e}")
+                            # Include job if we can't parse the date (conservative)
                             all_jobs.append(job)
-                            page_has_recent = True
-                            jobs_outside_window = 0  # Reset counter
-                            total_records = job.get("totalRecords", total_records)
-                        else:
-                            # Job is outside time window
-                            jobs_outside_window += 1
-                    except Exception as e:
-                        logger.warning(f"[apple] Failed to parse date for job {job.get('id')}: {e}")
-                        # Include job if we can't parse the date (conservative approach)
+                    else:
+                        # No date field, include conservatively
                         all_jobs.append(job)
-                        page_has_recent = True
-                        jobs_outside_window = 0
+                
+                # If we found a job older than the cutoff, stop pagination
+                if page_cutoff_found:
+                    logger.info(f"[apple] Early exit: cutoff reached on page {page} of {total_pages}")
+                    break
+                
+                # Log progress every 10 pages
+                if pages_fetched % 10 == 0:
+                    logger.info(f"[apple] Progress: {pages_fetched}/{total_pages} pages fetched, "
+                               f"{len(all_jobs)} jobs in recent window")
             
-            logger.info(f"[apple] Page {page}/{total_pages}: fetched {len(page_jobs)} jobs, "
-                       f"{len(all_jobs)} total in recent window")
-            
-            # OPTIMIZATION: If all jobs on this page are outside the time window,
-            # and jobs appear to be sorted by date (likely), we can stop.
-            # Check if we've seen 2+ consecutive pages with no recent jobs.
-            if not page_has_recent and jobs_outside_window >= 20:
-                logger.info(f"[apple] Page {page}: All {len(page_jobs)} jobs are outside time window. "
-                           f"Stopping early (jobs likely sorted by date)")
-                break
+            except Exception as e:
+                logger.warning(f"[apple] Error fetching page {page}: {e}")
+                continue
         
-        
-        logger.info(f"[apple] Fetched {len(all_jobs)} recent jobs from {total_records} total")
+        logger.info(f"[apple] Fetched {len(all_jobs)} recent jobs from {total_records} total "
+                   f"({pages_fetched} pages scanned, early exit enabled)")
         return all_jobs, total_records
 
     @staticmethod

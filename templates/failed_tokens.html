@@ -1,0 +1,714 @@
+{% extends "base.html" %}
+
+{% block title %}Failed Tokens Monitor — Job Sniper{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>🚨 Failed Tokens Monitor</h1>
+        <p style="margin: 0; color: #666; font-size: 0.95rem;">Real-time monitoring of board tokens with failures. Take action to improve system health.</p>
+    </div>
+    <div style="display: flex; gap: 0.5rem;">
+        <button class="btn btn-secondary" onclick="refreshData()">
+            <i class="fa-solid fa-arrows-rotate"></i> Refresh
+        </button>
+        <button class="btn btn-secondary" onclick="autoRefreshToggle()">
+            <i class="fa-solid fa-play-circle"></i> <span id="auto-status">Auto: OFF</span>
+        </button>
+    </div>
+</div>
+
+<!-- Statistics Row (Horizontal) -->
+<div class="stats-container disable-select" style="margin-bottom: 1.5rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+    <div class="stat-card-mini">
+        <div class="stat-label">Total Failed</div>
+        <div class="stat-number" id="total-failures">0</div>
+    </div>
+    <div class="stat-card-mini">
+        <div class="stat-label">Max Consecutive</div>
+        <div class="stat-number" id="max-consecutive">0</div>
+    </div>
+    <div class="stat-card-mini">
+        <div class="stat-label">Avg Consecutive</div>
+        <div class="stat-number" id="avg-consecutive">0.0</div>
+    </div>
+    <div class="stat-card-mini">
+        <div class="stat-label">Top Failure Type</div>
+        <div class="stat-number" id="top-failure-type" style="font-size: 1.2rem; margin-top: 0.15rem; text-transform: uppercase;">—</div>
+    </div>
+</div>
+
+<!-- Search Bar -->
+<div class="panel disable-select" style="margin-bottom: 1.5rem; padding: 1rem 1.5rem;">
+    <div style="display: flex; align-items: center; gap: 1rem;">
+        <i class="fa-solid fa-magnifying-glass" style="color: #666; font-size: 1.1rem;"></i>
+        <input 
+            type="text" 
+            id="searchInput" 
+            class="search-input" 
+            placeholder="Search by board token or failure type..." 
+        />
+        <span id="resultCount" style="color: #666; font-size: 0.9rem; min-width: 120px; text-align: right;"></span>
+    </div>
+</div>
+
+<!-- Failures Table Panel -->
+<div class="panel disable-select">
+    <div class="table-responsive">
+        <table class="company-table">
+            <thead>
+                <tr>
+                    <th>Board Token</th>
+                    <th>Base URL</th>
+                    <th>ATS</th>
+                    <th>Failure Type</th>
+                    <th>Error Message</th>
+                    <th style="text-align: center;">Failures</th>
+                    <th>Last Failure</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="failures-body">
+                <tr>
+                    <td colspan="8" style="text-align: center; padding: 2rem; color: #999;">Loading...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination Controls -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #eee;">
+        <div style="display: flex; gap: 0.5rem;">
+            <button id="prevBtn" class="btn btn-sm" onclick="previousPage()" disabled>
+                <i class="fa-solid fa-chevron-left"></i> Previous
+            </button>
+            <button id="nextBtn" class="btn btn-sm" onclick="nextPage()">
+                Next <i class="fa-solid fa-chevron-right"></i>
+            </button>
+        </div>
+        <span id="pageInfo" style="color: #666; font-size: 0.9rem;">Page 1</span>
+        <div style="min-width: 100px;"></div>
+    </div>
+</div>
+
+<style>
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    gap: 1rem;
+}
+
+.page-header h1 {
+    margin: 0 0 8px;
+    font-size: 1.8rem;
+}
+
+.stats-container {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.stat-card-mini {
+    flex: 1;
+    min-width: 140px;
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 1rem;
+    text-align: center;
+}
+
+.stat-card-mini .stat-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: #666;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.5px;
+}
+
+.stat-card-mini .stat-number {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #333;
+}
+
+.search-input {
+    flex: 1; 
+    padding: 0.75rem; 
+    border: 0px !important; 
+    border-radius: 4px; 
+    font-size: 1rem;
+    background: #f5f5f5;
+}
+
+.search-input:focus {
+    outline: none;
+    background: #fff;
+}
+
+.failure-badge {
+    width: 100px;
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: center;
+}
+
+.failure-badge.rate-limit {
+    background: #ffebee;
+    color: #c62828;
+}
+
+.failure-badge.network-error {
+    background: #fff3e0;
+    color: #e65100;
+}
+
+.failure-badge.timeout {
+    background: #f3e5f5;
+    color: #6a1b9a;
+}
+
+.failure-badge.parse-error {
+    background: #fce4ec;
+    color: #ad1457;
+}
+
+.failure-badge.http-error {
+    background: #ffebee;
+    color: #b71c1c;
+}
+
+.failure-badge.other {
+    background: #eceff1;
+    color: #455a64;
+}
+
+.error-message-cell {
+    min-width: 300px;
+    max-width: 400;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    line-clamp: 3;              /* ✅ standard property */
+    -webkit-line-clamp: 3;      /* ✅ WebKit fallback */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.85rem;
+    color: #555;
+    word-break: break-word;
+}
+
+.base-url-cell {
+    max-width: 150px;
+    min-width: 100px;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    line-clamp: 1;              /* ✅ standard property */
+    -webkit-line-clamp: 1;      /* ✅ WebKit fallback */
+}
+
+.board-token-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+}
+
+.copy-btn, .redirect-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 100%;
+    padding: 0;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    font-size: 0.8rem;
+    background: #f0f0f0;
+    border: 1px solid #ddd;
+    color: #555;
+}
+
+.copy-btn:hover, .redirect-btn:hover {
+    background: #505050;
+    color: white;
+    transform: scale(1.05);
+    border-color: #505050;
+}
+
+.copy-btn:active, .redirect-btn:active {
+    transform: scale(0.95);
+}
+
+.copy-feedback {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #4caf50;
+    color: white;
+    padding: 0.75rem 1.5rem;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    z-index: 1000;
+    animation: slideIn 0.3s ease;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.action-buttons .btn {
+    padding: 0.35rem 0.65rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.time-relative {
+    font-size: 0.85rem;
+    color: #666;
+    min-width: 150px;
+}
+
+.consecutive-badge {
+    background: #ffcdd2;
+    color: #b71c1c;
+    padding: 0.25rem 0.65rem;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.feedback-notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    color: white;
+    padding: 0.75rem 1.5rem;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    z-index: 1000;
+    animation: slideIn 0.3s ease;
+    font-weight: 500;
+}
+
+.feedback-notification.success {
+    background: #4caf50;
+}
+
+.feedback-notification.error {
+    background: #f44336;
+}
+
+.feedback-notification.info {
+    background: #2196F3;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(400px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+</style>
+
+<script>
+let autoRefreshInterval = null;
+const AUTO_REFRESH_INTERVAL = 5000; // 5 seconds
+let allFailures = [];
+let filteredFailures = [];
+let currentPage = 1;
+const ITEMS_PER_PAGE = 30;
+
+// ATS Base URL Schemas from config.yaml
+const ATS_SCHEMAS = {
+    'greenhouse': 'https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs',
+    'ashby': 'https://api.ashbyhq.com/posting-api/job-board/{board_token}',
+    'workable': 'https://apply.workable.com/api/v1/widget/accounts/{board_token}',
+    'workday': '{board_token}',
+    'lever': 'https://api.lever.co/v0/postings/{board_token}'
+};
+
+function generateBaseUrl(boardToken, ats) {
+    const schema = ATS_SCHEMAS[ats.toLowerCase()] || '';
+    return schema.replace('{board_token}', boardToken);
+}
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        // Show feedback
+        const feedback = document.createElement('div');
+        feedback.className = 'copy-feedback';
+        feedback.textContent = '✓ Copied to clipboard';
+        document.body.appendChild(feedback);
+        
+        setTimeout(() => {
+            feedback.remove();
+        }, 2000);
+    }).catch(() => {
+        showFeedback('Failed to copy to clipboard', 'error');
+    });
+}
+
+// Setup copy button listeners
+function setupCopyButtons() {
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const url = btn.getAttribute('data-url');
+            copyToClipboard(url);
+        });
+    });
+}
+
+// Setup redirect button listeners
+function setupRedirectButtons() {
+    document.querySelectorAll('.redirect-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const url = btn.getAttribute('data-url');
+            window.open(url, '_blank');
+        });
+    });
+}
+
+async function refreshData() {
+    try {
+        // Get failures
+        const failuresRes = await fetch('/api/failed-tokens?limit=500');
+        const failuresData = await failuresRes.json();
+        
+        // Get stats
+        const statsRes = await fetch('/api/failures/stats');
+        const statsData = await statsRes.json();
+        
+        if (failuresData.status === 'success' && statsData.status === 'success') {
+            allFailures = failuresData.data || [];
+            filteredFailures = [...allFailures];
+            currentPage = 1;
+            
+            renderFailures();
+            renderStats(statsData.data);
+            updatePagination();
+            updateResultCount();
+        }
+    } catch (error) {
+        console.error('Error refreshing data:', error);
+        showFeedback('Failed to load data: ' + error.message, 'error');
+    }
+}
+
+function renderStats(stats) {
+    document.getElementById('total-failures').textContent = stats.total_failed_tokens || 0;
+    document.getElementById('max-consecutive').textContent = stats.max_consecutive_failures || 0;
+    document.getElementById('avg-consecutive').textContent = (stats.avg_consecutive_failures || 0).toFixed(2);
+    
+    // Find top failure type
+    const types = stats.failure_types || {};
+    let topType = '—';
+    if (Object.keys(types).length > 0) {
+        topType = Object.keys(types).reduce((a, b) => types[a] > types[b] ? a : b);
+    }
+    document.getElementById('top-failure-type').textContent = topType;
+}
+
+function renderFailures() {
+    const tbody = document.getElementById('failures-body');
+    
+    const start = (currentPage - 1) * ITEMS_PER_PAGE;
+    const end = start + ITEMS_PER_PAGE;
+    const pageFailures = filteredFailures.slice(start, end);
+    
+    if (!pageFailures || pageFailures.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 2rem; color: #999;">No failures found</td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = pageFailures.map(failure => {
+        const lastFailure = new Date(failure.last_failure_time);
+        const relativeTime = getRelativeTime(lastFailure);
+        const failureTypeClass = getFailureTypeClass(failure.failure_type);
+        
+        const displayToken = failure.board_token.length > 15 
+            ? failure.board_token.substring(0, 15) + '...' 
+            : failure.board_token;
+        
+        const baseUrl = generateBaseUrl(failure.board_token, failure.ats);
+        const displayUrl = baseUrl.length > 35
+            ? baseUrl.substring(0, 35) + '...'
+            : baseUrl;
+        
+        const displayError = (failure.error_message || 'N/A').substring(0, 100);
+        
+        return `
+            <tr>
+                <td>
+                    <div class="board-token-cell">
+                        <code style="font-size: 0.85rem;" title="${escapeHtml(failure.board_token)}">
+                            ${escapeHtml(displayToken)}
+                        </code>
+                        <button type="button" class="copy-btn" data-url="${escapeHtml(failure.board_token)}" title="Copy token">
+                            <i class="fa-solid fa-copy"></i>
+                        </button>
+                    </div>
+                </td>
+                <td>
+                    <div class="base-url-cell">
+                        <span title="${escapeHtml(baseUrl)}" style="flex: 1; overflow: hidden; text-overflow: ellipsis;">
+                            ${escapeHtml(displayUrl)}
+                        </span>
+                        <button type="button" class="redirect-btn" data-url="${escapeHtml(baseUrl)}" title="Open URL">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                        </button>
+                    </div>
+                </td>
+                <td>
+                    <span style="background: #e3f2fd; color: #1565c0; padding: 0.2rem 0.6rem; border-radius: 3px; font-size: 0.8rem; font-weight: 600; text-align: center;">
+                        ${escapeHtml(failure.ats.toUpperCase())}
+                    </span>
+                </td>
+                <td>
+                    <span class="failure-badge ${failureTypeClass}">
+                        ${escapeHtml(failure.failure_type)}
+                    </span>
+                </td>
+                <td>
+                    <span class="error-message-cell" title="${escapeHtml(failure.error_message || 'N/A')}">
+                        ${escapeHtml(displayError)}
+                    </span>
+                </td>
+                <td style="text-align: center;">
+                    <span class="consecutive-badge">${failure.consecutive_failures}</span>
+                </td>
+                <td style="min-width: 120px;">
+                    <span class="time-relative" title="${lastFailure.toLocaleString()}">
+                        ${relativeTime}
+                    </span>
+                </td>
+                <td>
+                    <div class="action-buttons">
+                        <button class="btn btn-sm" style="background: #fff3e0; color: #e65100; border: 1px solid #ffe0b2;" onclick="clearFailure('${escapeHtml(failure.board_token)}', '${escapeHtml(failure.ats)}')">
+                            ↻ Retry
+                        </button>
+                        <button class="btn btn-sm" style="background: #ffebee; color: #c62828; border: 1px solid #f8bbd0;" onclick="deleteToken('${escapeHtml(failure.board_token)}', '${escapeHtml(failure.ats)}')">
+                            ✕ Delete
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+    
+    setupCopyButtons();
+    setupRedirectButtons();
+}
+
+async function deleteToken(boardToken, ats) {
+    if (!confirm(`Delete token: ${boardToken} (${ats})? This cannot be undone.`)) {
+        return;
+    }
+    
+    try {
+        const res = await fetch('/api/failed-tokens/delete', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ board_token: boardToken, ats: ats })
+        });
+        
+        const data = await res.json();
+        if (res.ok) {
+            showFeedback(`✓ Deleted: ${boardToken}`, 'success');
+            refreshData();
+        } else {
+            showFeedback('✗ ' + (data.message || 'Failed to delete token'), 'error');
+        }
+    } catch (error) {
+        showFeedback('✗ Error: ' + error.message, 'error');
+    }
+}
+
+async function clearFailure(boardToken, ats) {
+    try {
+        const res = await fetch('/api/failed-tokens/clear-failure', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ board_token: boardToken, ats: ats })
+        });
+        
+        const data = await res.json();
+        if (res.ok) {
+            showFeedback(`✓ Cleared failures for: ${boardToken}`, 'success');
+            refreshData();
+        } else {
+            showFeedback('✗ ' + (data.message || 'Failed to clear failure'), 'error');
+        }
+    } catch (error) {
+        showFeedback('✗ Error: ' + error.message, 'error');
+    }
+}
+
+function autoRefreshToggle() {
+    const statusEl = document.getElementById('auto-status');
+    
+    if (autoRefreshInterval) {
+        // Turn off
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+        statusEl.textContent = 'Auto: OFF';
+    } else {
+        // Turn on
+        refreshData(); // Refresh immediately
+        autoRefreshInterval = setInterval(refreshData, AUTO_REFRESH_INTERVAL);
+        statusEl.textContent = 'Auto: ON';
+    }
+}
+
+function getFailureTypeClass(type) {
+    const typeMap = {
+        'rate_limit': 'rate-limit',
+        'network_error': 'network-error',
+        'timeout': 'timeout',
+        'parse_error': 'parse-error',
+        'http_error': 'http-error',
+    };
+    return typeMap[type] || 'other';
+}
+
+function getRelativeTime(date) {
+    const now = new Date();
+    const diff = now - date;
+    
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) return `${days}d ago`;
+    if (hours > 0) return `${hours}h ago`;
+    if (minutes > 0) return `${minutes}m ago`;
+    return `${seconds}s ago`;
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function showFeedback(message, type = 'info') {
+    const feedback = document.createElement('div');
+    feedback.className = 'feedback-notification ' + type;
+    feedback.textContent = message;
+    document.body.appendChild(feedback);
+    
+    setTimeout(() => {
+        feedback.remove();
+    }, 3000);
+}
+
+function updatePagination() {
+    const totalPages = Math.ceil(filteredFailures.length / ITEMS_PER_PAGE);
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const pageInfo = document.getElementById('pageInfo');
+    
+    prevBtn.disabled = currentPage === 1;
+    nextBtn.disabled = currentPage >= totalPages || totalPages === 0;
+    
+    pageInfo.textContent = totalPages === 0 
+        ? 'No results' 
+        : `Page ${currentPage} of ${totalPages}`;
+}
+
+function nextPage() {
+    const totalPages = Math.ceil(filteredFailures.length / ITEMS_PER_PAGE);
+    if (currentPage < totalPages) {
+        currentPage++;
+        renderFailures();
+        updatePagination();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+}
+
+function previousPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        renderFailures();
+        updatePagination();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+}
+
+function updateResultCount() {
+    const resultCount = document.getElementById('resultCount');
+    const total = allFailures.length;
+    const filtered = filteredFailures.length;
+    
+    if (filtered === total) {
+        resultCount.textContent = `${total} failed tokens`;
+    } else {
+        resultCount.textContent = `${filtered} of ${total}`;
+    }
+}
+
+function performSearch(query) {
+    const lowerQuery = query.toLowerCase().trim();
+    
+    if (!lowerQuery) {
+        filteredFailures = [...allFailures];
+    } else {
+        filteredFailures = allFailures.filter(failure => 
+            failure.board_token.toLowerCase().includes(lowerQuery) ||
+            failure.ats.toLowerCase().includes(lowerQuery) ||
+            failure.failure_type.toLowerCase().includes(lowerQuery) ||
+            (failure.error_message && failure.error_message.toLowerCase().includes(lowerQuery))
+        );
+    }
+    
+    currentPage = 1;
+    renderFailures();
+    updatePagination();
+    updateResultCount();
+}
+
+function setupSearchListener() {
+    const searchInput = document.getElementById('searchInput');
+    let searchDebounceTimer = null;
+    
+    searchInput.addEventListener('input', (e) => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+            performSearch(e.target.value);
+        }, 300);
+    });
+}
+
+// Initial load
+document.addEventListener('DOMContentLoaded', function() {
+    setupSearchListener();
+    refreshData();
+});
+</script>
+{% endblock %}

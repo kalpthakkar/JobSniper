@@ -371,10 +371,13 @@ class GooglePoller:
                 )
             else:
                 logger.info(f"[google] 🚨 {len(new_jobs)} NEW job(s)!")
-                # Fetch job details for notification
-                logger.info(f"[google] Fetching job details for {len(new_jobs)} new job(s)...")
-                self._fetch_job_details(new_jobs)
-                self.notifier.notify(new_jobs)
+                try:
+                    # Fetch job details for notification
+                    logger.info(f"[google] Fetching job details for {len(new_jobs)} new job(s)...")
+                    self._fetch_job_details(new_jobs)
+                    self.notifier.notify(new_jobs)
+                except Exception as e:
+                    logger.error(f"[google] Error fetching/notifying new jobs: {e}", exc_info=True)
 
         if removed_ids:
             logger.info(f"[google] ➖ {len(removed_ids)} job(s) removed")

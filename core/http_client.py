@@ -73,7 +73,9 @@ def _build_session(timeout: int, max_retries: int, retry_delay: float) -> reques
         allowed_methods=["GET", "POST"],
         raise_on_status=False,
     )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=100)
+    # OPTIMIZATION (Phase 1): Increased pool from 50->100 connections, 100->200 max size
+    # This allows more concurrent requests without queue contention
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=100, pool_maxsize=200)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
@@ -143,9 +145,11 @@ class HttpClient:
         if headers:
             base_headers.update(headers)
 
-        # Tiny jitter to humanise requests — kept small so worker slots aren't wasted.
-        # The scheduler's adaptive_gap already controls inter-dispatch pacing.
-        jitter = random.uniform(0.02, 0.1)
+        # Tiny jitter to humanise requests.
+        # Kept at the low end: each worker thread sleeping even 50 ms means
+        # 20 workers waste 1 s of collective executor time per dispatch cycle.
+        # The scheduler's adaptive_gap already handles pacing.
+        jitter = random.uniform(0.01, 0.05)
         time.sleep(jitter)
 
         kwargs: Dict[str, Any] = {
@@ -181,7 +185,7 @@ class HttpClient:
         if headers:
             base_headers.update(headers)
 
-        jitter = random.uniform(0.02, 0.1)
+        jitter = random.uniform(0.01, 0.05)
         time.sleep(jitter)
 
         kwargs: Dict[str, Any] = {

@@ -124,7 +124,11 @@ class MicrosoftAdapter:
 
     def fetch_all_recent_jobs(self, hours: int = 6) -> Tuple[List[dict], int]:
         """
-        Fetch all jobs posted within last N hours.
+        Fetch all jobs posted within last N hours using SEQUENTIAL page fetching with EARLY EXIT.
+        
+        Since API returns jobs sorted by timestamp (newest first), we fetch pages
+        sequentially and EXIT as soon as we encounter a job older than N hours.
+        This prevents unnecessary API calls for pages containing only old jobs.
         
         Args:
             hours: Time window in hours
@@ -135,63 +139,87 @@ class MicrosoftAdapter:
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         logger.info(f"[microsoft] Fetching jobs from last {hours} hours (cutoff: {cutoff_time})")
 
+        # First, fetch page 1 to determine total pages
+        page1_data = self.fetch_page(1)
+        total_count = page1_data.get("count", 0)
+        
+        # Estimate total pages (10 jobs per page)
+        total_pages = (total_count + 9) // 10
+        logger.info(f"[microsoft] Total records: {total_count}, estimated pages: {total_pages}")
+        
         all_jobs = []
-        page = 1
-        jobs_outside_window = 0
-        page_has_recent = False
-
-        while True:
+        pages_fetched = 1  # Already fetched page 1
+        
+        # Process page 1
+        positions = page1_data.get("positions", [])
+        page_cutoff_found = False
+        
+        for job in positions:
+            posted_ts = job.get("postedTs")
+            if posted_ts:
+                posted_dt = datetime.fromtimestamp(posted_ts, tz=timezone.utc)
+                if posted_dt > cutoff_time:
+                    all_jobs.append(job)
+                else:
+                    # Found a job older than cutoff — all remaining jobs will be older
+                    page_cutoff_found = True
+                    logger.debug(f"[microsoft] Cutoff reached on page 1. Stopping pagination early.")
+            else:
+                # No timestamp, include conservatively
+                all_jobs.append(job)
+        
+        # If only 1 page or cutoff found on page 1, we're done
+        if total_pages <= 1 or page_cutoff_found:
+            if page_cutoff_found:
+                logger.info(f"[microsoft] Early exit: cutoff reached on page 1 of {total_pages}")
+            logger.info(f"[microsoft] Fetched {len(all_jobs)} recent jobs from {total_count} total "
+                       f"({pages_fetched} pages scanned, early exit enabled)")
+            return all_jobs, total_count
+        
+        # Fetch remaining pages sequentially with early exit
+        for page in range(2, total_pages + 1):
             try:
                 page_data = self.fetch_page(page)
                 positions = page_data.get("positions", [])
-                total_count = page_data.get("count", 0)
-
+                
                 if not positions:
-                    logger.info(
-                        f"[microsoft] Reached end of results at page {page}. "
-                        f"Fetched {len(all_jobs)} recent jobs from {total_count} total"
-                    )
-                    break
-
-                page_has_recent = False
-                jobs_outside_window = 0
-
+                    # Empty page — continue to next
+                    continue
+                
+                pages_fetched += 1
+                page_cutoff_found = False
+                
+                # Filter jobs by time window
                 for job in positions:
                     posted_ts = job.get("postedTs")
-                    if not posted_ts:
-                        continue
-
-                    # Convert epoch timestamp to datetime
-                    posted_dt = datetime.fromtimestamp(posted_ts, tz=timezone.utc)
-
-                    if posted_dt > cutoff_time:
-                        all_jobs.append(job)
-                        page_has_recent = True
-                        jobs_outside_window = 0
+                    if posted_ts:
+                        posted_dt = datetime.fromtimestamp(posted_ts, tz=timezone.utc)
+                        if posted_dt > cutoff_time:
+                            all_jobs.append(job)
+                        else:
+                            # Found a job older than cutoff — all remaining jobs will be older
+                            page_cutoff_found = True
+                            logger.debug(f"[microsoft] Cutoff reached on page {page}. Stopping pagination early.")
                     else:
-                        jobs_outside_window += 1
-
-                recent_count = len(all_jobs)
-                logger.info(
-                    f"[microsoft] Page {page}: fetched {len(positions)} jobs, "
-                    f"{recent_count} total in recent window"
-                )
-
-                # Early exit: if entire page is outside window, all remaining will be too
-                if not page_has_recent and jobs_outside_window >= 10:
-                    logger.info(
-                        f"[microsoft] Page {page}: All {jobs_outside_window} jobs are outside "
-                        f"time window. Stopping early (jobs likely sorted by date)"
-                    )
+                        # No timestamp, include conservatively
+                        all_jobs.append(job)
+                
+                # If we found a job older than the cutoff, stop pagination
+                if page_cutoff_found:
+                    logger.info(f"[microsoft] Early exit: cutoff reached on page {page} of {total_pages}")
                     break
-
-                page += 1
-
+                
+                # Log progress every 10 pages
+                if pages_fetched % 10 == 0:
+                    logger.info(f"[microsoft] Progress: {pages_fetched}/{total_pages} pages fetched, "
+                               f"{len(all_jobs)} jobs in recent window")
+            
             except Exception as e:
-                logger.error(f"[microsoft] Error during pagination: {e}")
-                break
-
-        logger.info(f"[microsoft] Fetched {len(all_jobs)} recent jobs from {total_count} total")
+                logger.warning(f"[microsoft] Error fetching page {page}: {e}")
+                continue
+        
+        logger.info(f"[microsoft] Fetched {len(all_jobs)} recent jobs from {total_count} total "
+                   f"({pages_fetched} pages scanned, early exit enabled)")
         return all_jobs, total_count
 
     @staticmethod

@@ -62,8 +62,8 @@ def _compute_settings_hash(db: JobDatabase) -> str:
         value = db.get_setting(key)
         settings[key] = value or "true"  # Default to enabled if not set
     
-    # Company-specific settings (Google, Tesla)
-    for company in ["google", "tesla"]:
+    # Company-specific settings (Google, Tesla, Apple, Microsoft)
+    for company in ["google", "tesla", "apple", "microsoft"]:
         key = f"company_{company}"
         value = db.get_setting(key)
         settings[key] = value or "true"  # Default to enabled if not set
@@ -133,8 +133,10 @@ class PollOrchestrator:
         db: JobDatabase,
         http: HttpClient,
         notifier: Notifier,
-        google_poller=None,  # GooglePoller instance (optional)
-        tesla_poller=None,   # TeslaPoller instance (optional)
+        google_poller=None,    # GooglePoller instance (optional)
+        tesla_poller=None,     # TeslaPoller instance (optional)
+        apple_poller=None,     # ApplePoller instance (optional)
+        microsoft_poller=None, # MicrosoftPoller instance (optional)
     ):
         self.all_companies = all_companies  # All companies (before ATS filtering)
         self.companies = _filter_enabled_companies(all_companies, db)  # Currently enabled ATS companies only
@@ -144,8 +146,12 @@ class PollOrchestrator:
         self.notifier = notifier
         self.google_poller = google_poller
         self.tesla_poller = tesla_poller
-        self._google_enabled = None  # Track current state
-        self._tesla_enabled = None   # Track current state
+        self.apple_poller = apple_poller
+        self.microsoft_poller = microsoft_poller
+        self._google_enabled = None    # Track current state
+        self._tesla_enabled = None     # Track current state
+        self._apple_enabled = None     # Track current state
+        self._microsoft_enabled = None # Track current state
         self._stop    = threading.Event()
         self.scheduler = PriorityScheduler(self.companies, callback=self._log_stats)
         self.executor = ThreadPoolExecutor(max_workers=config.max_workers)
@@ -161,9 +167,12 @@ class PollOrchestrator:
         self._last_settings_hash = _compute_settings_hash(db)
         self._last_settings_state = self._get_current_adapter_settings()  # Store actual settings for comparison
         
-        # Initialize company poller states
-        self._google_enabled = db.get_setting("company_google") != "false"
-        self._tesla_enabled = db.get_setting("company_tesla") != "false"
+        # Initialize company poller states from DB so the config monitor
+        # doesn't think every adapter changed on the very first tick.
+        self._google_enabled     = db.get_setting("company_google")     != "false"
+        self._tesla_enabled      = db.get_setting("company_tesla")      != "false"
+        self._apple_enabled      = db.get_setting("company_apple")      != "false"
+        self._microsoft_enabled  = db.get_setting("company_microsoft")  != "false"
         
         # Precompute ATS schemas for enabled companies
         self._update_ats_schemas()
@@ -214,7 +223,7 @@ class PollOrchestrator:
             settings[key] = value != "false"  # Default to True if not set
         
         # Company-specific adapter settings
-        for company in ["google", "tesla"]:
+        for company in ["google", "tesla", "apple", "microsoft"]:
             key = f"company_{company}"
             value = self.db.get_setting(key)
             settings[key] = value != "false"  # Default to True if not set
@@ -370,7 +379,7 @@ class PollOrchestrator:
 
     def _update_company_poller_state(self, current_settings: dict):
         """
-        Start or stop Google and Tesla pollers based on their adapter settings.
+        Start or stop Google, Tesla, Apple, and Microsoft pollers based on their adapter settings.
         """
         # Handle Google adapter
         google_enabled = current_settings.get("company_google", False)
@@ -382,7 +391,7 @@ class PollOrchestrator:
                 logger.info("   ⏹️  Stopping Google Careers poller")
                 self.google_poller.stop()
             self._google_enabled = google_enabled
-        
+
         # Handle Tesla adapter
         tesla_enabled = current_settings.get("company_tesla", False)
         if self.tesla_poller and tesla_enabled != self._tesla_enabled:
@@ -393,6 +402,28 @@ class PollOrchestrator:
                 logger.info("   ⏹️  Stopping Tesla Careers poller")
                 self.tesla_poller.stop()
             self._tesla_enabled = tesla_enabled
+
+        # Handle Apple adapter
+        apple_enabled = current_settings.get("company_apple", False)
+        if self.apple_poller and apple_enabled != self._apple_enabled:
+            if apple_enabled:
+                logger.info("   ▶️  Starting Apple Careers poller")
+                self.apple_poller.start()
+            else:
+                logger.info("   ⏹️  Stopping Apple Careers poller")
+                self.apple_poller.stop()
+            self._apple_enabled = apple_enabled
+
+        # Handle Microsoft adapter
+        microsoft_enabled = current_settings.get("company_microsoft", False)
+        if self.microsoft_poller and microsoft_enabled != self._microsoft_enabled:
+            if microsoft_enabled:
+                logger.info("   ▶️  Starting Microsoft Careers poller")
+                self.microsoft_poller.start()
+            else:
+                logger.info("   ⏹️  Stopping Microsoft Careers poller")
+                self.microsoft_poller.stop()
+            self._microsoft_enabled = microsoft_enabled
 
     def _apply_disappearance_policy(self, company: Company, seen_ids: List[str], all_ids: List[str], metadata: dict) -> tuple[list[str], list[str], dict]:
         absent_counts = metadata.get("disappearance_counts", {}) if isinstance(metadata, dict) else {}
@@ -428,17 +459,18 @@ class PollOrchestrator:
         """
         try:
             while not self._stop.is_set():
-                # Acquire lock briefly to get next company from scheduler
-                with self._scheduler_lock:
-                    state = self.scheduler.next_company()
-                # Lock released here — config monitor can update if needed
+                # Call next_company() WITHOUT _scheduler_lock.
+                # The scheduler has its own internal _lock for _seq_pos.
+                # Wrapping with the outer _scheduler_lock here caused a
+                # lock convoy: next_company() scans up to 24 000 slots
+                # and workers calling record_outcome() also want
+                # _scheduler_lock — so all 20 workers piled up waiting,
+                # executor saturated, polls froze for minutes.
+                state = self.scheduler.next_company()
 
                 if state is None:
                     # All companies cooling down — sleep until soonest is ready
-                    with self._scheduler_lock:
-                        sleep_for = self.scheduler.soonest_ready_in()
-                    # Always sleep at least 0.1s to avoid busy-looping when scheduler is empty
-                    sleep_for = max(sleep_for, 0.1)
+                    sleep_for = max(self.scheduler.soonest_ready_in(), 0.1)
                     logger.debug(f"Dispatcher: no work available, sleeping {sleep_for:.2f}s")
                     self._stop.wait(sleep_for)  # interruptible
                     continue
@@ -449,8 +481,7 @@ class PollOrchestrator:
                     break  # Executor shut down
 
                 # Inter-dispatch gap — prevents bursting all HIGH slots at once
-                with self._scheduler_lock:
-                    gap = self.scheduler.adaptive_gap
+                gap = self.scheduler.adaptive_gap
                 if gap > 0.01:
                     self._stop.wait(gap)  # interruptible by stop()
 
@@ -476,25 +507,22 @@ class PollOrchestrator:
             schema = self.ats_schemas.get(company.ats)
             if schema is None:
                 logger.debug(f"[{company.name}] Skipped (ATS {company.ats.value} no longer enabled)")
-                # Record as success to avoid throttling due to a transient disable
-                with self._scheduler_lock:
-                    self.scheduler.record_outcome(state, True)
+                # record_outcome() is called WITHOUT _scheduler_lock.
+                # It only mutates CompanyState + AdaptiveRateController
+                # (both internally safe). The outer lock was the source of the
+                # 4-minute freeze: all 20 workers queued on it while the
+                # dispatcher held it across a 24 000-slot next_company() scan.
+                self.scheduler.record_outcome(state, True)
                 return
             
             self._poll_once(company)
-            # Acquire lock to record outcome in scheduler
-            with self._scheduler_lock:
-                self.scheduler.record_outcome(state, True)
+            self.scheduler.record_outcome(state, True)
         except RateLimitError as e:
-            # Rate-limited: apply aggressive global backoff
             logger.error(f"[{company.name}] Rate limit hit: {e}")
-            # Trigger global slowdown by recording failure with rate limit flag
-            with self._scheduler_lock:
-                self.scheduler.record_outcome(state, False, is_rate_limit=True)
+            self.scheduler.record_outcome(state, False, is_rate_limit=True)
         except Exception as e:
             logger.warning(f"[{company.name}] Error: {e}")
-            with self._scheduler_lock:
-                self.scheduler.record_outcome(state, False)
+            self.scheduler.record_outcome(state, False)
 
     def _poll_once(self, company):
         schema = self.ats_schemas.get(company.ats)
@@ -590,8 +618,7 @@ class PollOrchestrator:
                 last_polled = self._last_polled_company
                 polls = self._polls_since_heartbeat
                 self._polls_since_heartbeat = 0
-            with self._scheduler_lock:
-                gap = self.scheduler.adaptive_gap
+            gap = self.scheduler.adaptive_gap
             logger.info(
                 f"💓 Heartbeat: companies={stats['total_tracked_companies']} "
                 f"total_jobs={stats['total_seen_jobs']} "

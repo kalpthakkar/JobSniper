@@ -73,16 +73,29 @@ class Notifier:
     def notify(self, jobs: List[Job]):
         """Dispatch new jobs to all enabled channels (read from database)."""
         if not jobs:
+            logger.warning("[notifier] notify() called with empty jobs list")
             return
+
+        logger.info(f"[notifier] 📧 Processing {len(jobs)} job(s) for notification")
 
         # Apply all filters: notification rules + preferences
         filtered_jobs, notification_removed, preference_removed = apply_all_filters(jobs, self.db)
+        
         if not filtered_jobs:
-            logger.info(f"[notifier] All jobs filtered out (notification: {notification_removed}, preference: {preference_removed})")
+            logger.info(f"[notifier] ⚠️  All {len(jobs)} jobs filtered out "
+                       f"(notification rules: {notification_removed}, preferences: {preference_removed})")
             return
+
+        logger.info(f"[notifier] ✅ {len(filtered_jobs)}/{len(jobs)} jobs passed filters "
+                   f"(notification rules removed: {notification_removed}, preferences removed: {preference_removed})")
 
         # Get currently enabled channels from database
         channels = self._get_enabled_channels()
+        logger.debug(f"[notifier] Enabled channels: {channels}")
+        
+        if not channels:
+            logger.warning("[notifier] No notification channels enabled")
+            return
         
         for channel in channels:
             try:
@@ -95,12 +108,13 @@ class Notifier:
                 else:
                     logger.warning(f"Unknown notification channel: {channel}")
             except Exception as e:
-                logger.error(f"Notification failed on channel '{channel}': {e}")
+                logger.error(f"Notification failed on channel '{channel}': {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Console (rich terminal output)
     # ------------------------------------------------------------------
     def _console(self, jobs: List[Job]):
+        logger.info(f"[notifier] 🖥️  Sending {len(jobs)} job(s) to console")
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         separator = "─" * 60
 
@@ -137,6 +151,9 @@ class Notifier:
                     truncated_desc = format_for_console(job.description)
                     if truncated_desc:
                         description_text = f"\n   {_DIM}📝 {truncated_desc}{_RESET}"
+                else:
+                    # Flag jobs with missing descriptions
+                    description_text = f"\n   {_YELLOW}⚠️  Description unavailable — see full details at URL{_RESET}"
 
                 print(f"\n  {_BOLD}{job.company}{_RESET}{dept_tag}")
                 print(f"  {_GREEN}▶ {job.title}{_RESET}{remote_tag}")
@@ -160,12 +177,14 @@ class Notifier:
         bot_token = self.telegram.get("bot_token", "")
         chat_id   = self.telegram.get("chat_id", "")
         if not bot_token or not chat_id:
-            logger.warning("Telegram not configured — skipping")
+            logger.warning("[notifier] Telegram not configured — skipping")
             return
 
+        logger.info(f"[notifier] 📱 Sending {len(jobs)} job(s) to Telegram")
+        
         # For large job batches (>50), send batched summary messages instead of individual ones
         if len(jobs) > 50:
-            logger.info(f"[telegram] Large batch detected ({len(jobs)} jobs) — sending batched summary")
+            logger.debug(f"[notifier] Large batch detected ({len(jobs)} jobs) — sending batched summary")
             self._telegram_batch_summary(jobs, bot_token, chat_id)
         else:
             # For small batches, send individual job messages
@@ -185,6 +204,9 @@ class Notifier:
             truncated_desc = format_for_telegram(job.description)
             if truncated_desc:
                 description_tag = f"\n📝 {truncated_desc}"
+        else:
+            # Flag jobs with missing descriptions
+            description_tag = f"\n⚠️ _Description unavailable — see full details via link_"
 
         text = (
             f"🚨 *New Job Alert*\n\n"
@@ -268,9 +290,11 @@ class Notifier:
         url     = self.webhook.get("url", "")
         headers = self.webhook.get("headers", {})
         if not url:
-            logger.warning("Webhook URL not configured — skipping")
+            logger.warning("[notifier] Webhook URL not configured — skipping")
             return
 
+        logger.info(f"[notifier] 🪝 Posting {len(jobs)} job(s) to webhook")
+        
         payload = {
             "event":     "new_jobs_detected",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -291,4 +315,10 @@ class Notifier:
                 for j in jobs
             ],
         }
-        requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            response.raise_for_status()
+            logger.debug(f"[notifier] Webhook POST successful (status {response.status_code})")
+        except Exception as e:
+            logger.error(f"[notifier] Webhook POST failed: {e}")

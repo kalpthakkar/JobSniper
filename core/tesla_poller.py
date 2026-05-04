@@ -39,13 +39,18 @@ class TeslaPoller:
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
 
     def start(self):
+        if self._thread.is_alive():
+            logger.debug("[tesla] Already running, ignoring start()")
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
         logger.info("🚀 Starting Tesla Careers poller")
         self._thread.start()
 
     def stop(self):
         logger.info("⏹ Stopping Tesla Careers poller…")
         self._stop.set()
-        if self._thread:
+        if self._thread.is_alive():
             self._thread.join(timeout=5)
 
     def _run_loop(self):
@@ -126,9 +131,16 @@ class TeslaPoller:
         # Notify about new jobs
         if truly_new_ids:
             logger.info(f"[Tesla] 🚨 {len(truly_new_ids)} NEW job(s)!")
-            new_jobs = self._fetch_new_job_details(truly_new_ids, jobs_list)
-            logger.info(f"[Tesla] [{len(new_jobs)}/{len(truly_new_ids)}] jobs successfully fetched")
-            self.notifier.notify(new_jobs)
+            try:
+                new_jobs = self._fetch_new_job_details(truly_new_ids, jobs_list)
+                logger.info(f"[Tesla] [{len(new_jobs)}/{len(truly_new_ids)}] jobs successfully fetched")
+                
+                if new_jobs:
+                    self.notifier.notify(new_jobs)
+                else:
+                    logger.warning(f"[Tesla] Failed to fetch details for any of the {len(truly_new_ids)} new jobs")
+            except Exception as e:
+                logger.error(f"[Tesla] Error fetching/notifying new jobs: {e}", exc_info=True)
 
         if confirmed_removed:
             logger.info(
@@ -143,9 +155,21 @@ class TeslaPoller:
     def _fetch_new_job_details(
         self, new_ids: List[str], jobs_list: List[dict]
     ) -> List[Job]:
-        """Fetch detailed metadata for new Tesla jobs and build Job objects."""
+        """
+        Fetch detailed metadata for new Tesla jobs and build Job objects.
+        
+        Falls back to partial job data if detail fetching fails, but still 
+        forwards the job to notification pipeline. Better to notify with 
+        incomplete data than drop the job entirely.
+        """
         jobs = []
-
+        
+        # Map job IDs to base job info from initial fetch
+        id_to_base_job = {
+            str(job.get("id", "")): job
+            for job in jobs_list
+        }
+        
         id_to_url = {
             str(job.get("id", "")): job.get("apply_url", "")
             for job in jobs_list
@@ -165,19 +189,62 @@ class TeslaPoller:
                 logger.warning(f"[Tesla] No URL available for new job {job_id}")
                 continue
 
+            base_job = id_to_base_job.get(job_id)
             details = details_by_url.get(apply_url)
-            if not details:
-                logger.warning(f"[Tesla] No details found for job {job_id} at {apply_url}")
-                continue
-
-            job = self._build_job_from_details(details, apply_url)
-            if job:
-                jobs.append(job)
+            
+            if details:
+                # Full details available
+                job = self._build_job_from_details(details, apply_url)
+                if job:
+                    jobs.append(job)
+            elif base_job:
+                # Detail fetch failed, but build from base info
+                logger.warning(f"[Tesla] Failed to fetch full details for job {job_id}; using partial data")
+                job = self._build_job_from_base_info(base_job, apply_url)
+                if job:
+                    jobs.append(job)
+            else:
+                logger.warning(f"[Tesla] No data available for job {job_id}")
 
         logger.debug(
-            f"[Tesla] Successfully built {len(jobs)} Job objects from {len(new_ids)} new jobs"
+            f"[Tesla] Successfully built {len(jobs)} Job objects from {len(new_ids)} new jobs "
+            f"({len([j for j in jobs if j.description])} with full details, "
+            f"{len([j for j in jobs if not j.description])} with partial data)"
         )
         return jobs
+
+    @staticmethod
+    def _build_job_from_base_info(base_job: dict, apply_url: str) -> Optional[Job]:
+        """
+        Build a Job object from base info only (no description).
+        
+        Used as fallback when detail fetching fails. Better to notify 
+        with partial data than drop the job entirely.
+        """
+        try:
+            job_id = str(base_job.get("id", ""))
+            if not job_id:
+                return None
+
+            title = base_job.get("t") or "Untitled"
+            location = base_job.get("location") or ""
+
+            return Job(
+                id=job_id,
+                title=title,
+                company="Tesla",
+                location=location,
+                department="",
+                url=apply_url,
+                posted_at=None,
+                remote=("remote" in location.lower() if location else False),
+                salary=None,
+                description=None,  # No description available
+                raw=base_job,
+            )
+        except Exception as e:
+            logger.error(f"[Tesla] Failed to build partial Job object: {e}")
+            return None
 
     @staticmethod
     def _build_tesla_description(details: dict) -> Optional[str]:

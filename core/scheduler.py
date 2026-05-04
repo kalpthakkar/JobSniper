@@ -321,15 +321,29 @@ class PriorityScheduler:
         Returns the next CompanyState ready to be polled, or None if all
         companies are currently in personal cooldown.
 
-        CRITICAL: Lock is acquired and released once per candidate — NOT held
-        across the entire sequence scan. This prevents worker threads calling
-        record_outcome() from blocking while the dispatcher scans hundreds of
-        cooldown slots.
+        LOCK STRATEGY — one snapshot, zero per-iteration locking:
+        ──────────────────────────────────────────────────────────
+        The previous implementation acquired _lock on every loop iteration
+        (up to seq_len=24 000+ times for 8013 companies × avg weight 3).
+        With 20 worker threads each calling record_outcome() concurrently,
+        this created a lock convoy: dispatcher releases, worker grabs it,
+        dispatcher grabs it again — 24 000 times per next_company() call.
+        This is what produced the 4-minute freezes visible in the logs.
 
-        Old bug: `with self._lock: for _ in range(seq_len): ...` held the lock
-        for the full scan duration. With a large seq_len (e.g. 800 slots for 60
-        HIGH-priority companies) and workers trying to record_outcome() after
-        every HTTP call, lock contention caused visible pauses.
+        Fix: acquire _lock ONCE to snapshot _seq_pos, scan _sequence
+        entirely outside the lock (it's read-only after __init__), then
+        acquire _lock ONCE more to commit the advanced position.
+
+        Why this is safe:
+        - _sequence never changes after __init__ (read-only list of indices).
+        - _states[idx].next_allowed is written only by record_success/failure,
+          called from worker threads. Only the dispatcher calls next_company().
+          A worker writing next_allowed concurrently with us reading it means
+          we might skip a company that just became ready — it will simply be
+          picked up in the next call. This is harmless and far better than the
+          lock-convoy freeze.
+        - _seq_pos and _cycle_count are only written here (single dispatcher
+          thread), so committing under lock is just for visibility to readers.
         """
         seq_len = len(self._sequence)
         if seq_len == 0:
@@ -337,41 +351,53 @@ class PriorityScheduler:
 
         now = time.monotonic()
 
-        for _ in range(seq_len):
-            # Acquire lock only to advance pointer + read one state
-            with self._lock:
-                pos   = self._seq_pos % seq_len
-                idx   = self._sequence[pos]
-                state = self._states[idx]
+        # ONE lock acquisition to read current position.
+        with self._lock:
+            start_pos = self._seq_pos
 
-                self._seq_pos += 1
-                if self._seq_pos >= seq_len:
-                    self._seq_pos = 0
-                    self._cycle_count += 1
-                    if self._cycle_count % 10 == 0:
-                        self._log_stats()
-                        if self._callback:
-                            self._callback()
+        # Scan entirely outside the lock — _sequence is read-only after init.
+        for i in range(seq_len):
+            pos = (start_pos + i) % seq_len
+            idx = self._sequence[pos]
+            state = self._states[idx]
 
-                ready = state.is_ready(now)
-            # Lock released here — record_outcome() can proceed in parallel
+            if state.is_ready(now):
+                # Commit the new position under lock.
+                new_pos = pos + 1
+                increment_cycle = (new_pos >= seq_len)
+                if increment_cycle:
+                    new_pos = 0
 
-            if ready:
+                with self._lock:
+                    self._seq_pos = new_pos
+                    if increment_cycle:
+                        self._cycle_count += 1
+                        if self._cycle_count % 10 == 0:
+                            self._log_stats()
+                            if self._callback:
+                                self._callback()
+
                 return state
 
-        return None   # all companies in cooldown — caller should sleep briefly
+        # Nobody ready — advance past what we scanned so next call starts fresh.
+        with self._lock:
+            self._seq_pos = (start_pos + seq_len) % seq_len
+
+        return None  # all companies in cooldown — caller should sleep briefly
 
     def soonest_ready_in(self) -> float:
         """
         Returns seconds until the soonest company exits its personal cooldown.
         Used by dispatcher to sleep precisely instead of busy-polling.
         Returns 0.0 if any company is already ready.
+        Reads next_allowed without the lock — same rationale as next_company().
         """
+        if not self._states:
+            return 0.0
         now = time.monotonic()
-        with self._lock:
-            if not self._states:
-                return 0.0
-            earliest = min(s.next_allowed for s in self._states)
+        # Read without lock: next_allowed is a float written atomically by workers;
+        # a slightly stale read just means we might wake 1ms early or late.
+        earliest = min(s.next_allowed for s in self._states)
         return max(0.0, min(earliest - now, 1.0))  # cap at 1s for responsiveness
 
     def _log_stats(self):

@@ -39,13 +39,18 @@ class MicrosoftPoller:
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
 
     def start(self):
+        if self._thread.is_alive():
+            logger.debug("[microsoft] Already running, ignoring start()")
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
         logger.info("🚀 Starting Microsoft Careers poller")
         self._thread.start()
 
     def stop(self):
         logger.info("⏹ Stopping Microsoft Careers poller…")
         self._stop.set()
-        if self._thread:
+        if self._thread.is_alive():
             self._thread.join(timeout=5)
 
     def _run_loop(self):
@@ -128,9 +133,16 @@ class MicrosoftPoller:
         # Notify about new jobs
         if truly_new_ids:
             logger.info(f"[microsoft] 🚨 {len(truly_new_ids)} NEW job(s)!")
-            new_jobs = self._fetch_new_job_details(truly_new_ids, jobs_list)
-            logger.info(f"[microsoft] [{len(new_jobs)}/{len(truly_new_ids)}] jobs successfully fetched")
-            self.notifier.notify(new_jobs)
+            try:
+                new_jobs = self._fetch_new_job_details(truly_new_ids, jobs_list)
+                logger.info(f"[microsoft] [{len(new_jobs)}/{len(truly_new_ids)}] jobs successfully fetched")
+                
+                if new_jobs:
+                    self.notifier.notify(new_jobs)
+                else:
+                    logger.warning(f"[microsoft] Failed to fetch details for any of the {len(truly_new_ids)} new jobs")
+            except Exception as e:
+                logger.error(f"[microsoft] Error fetching/notifying new jobs: {e}", exc_info=True)
 
         if confirmed_removed:
             logger.info(
