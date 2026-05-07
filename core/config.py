@@ -58,9 +58,22 @@ class Config:
             "workday": disable_24h_filter_config.get("workday", False),
         }
 
+        # Skip detail extraction settings per ATS type
+        skip_detail_config = self.system.get("skip_detail_extraction", {})
+        self.skip_detail_extraction: Dict[str, bool] = {
+            "greenhouse": skip_detail_config.get("greenhouse", False),
+            "lever": skip_detail_config.get("lever", False),
+            "ashby": skip_detail_config.get("ashby", False),
+            "workable": skip_detail_config.get("workable", False),
+            "workday": skip_detail_config.get("workday", False),
+        }
+
         # Frequency inspection settings
         self.frequency_inspection_enabled: bool = self.system.get("frequency_inspection_enabled", False)
         self.frequency_inspect_board_token: str = self.system.get("frequency_inspect_board_token", "")
+
+        # Performance diagnostics settings
+        self.performance_diagnostics_enabled: bool = self.system.get("performance_diagnostics_enabled", False)
 
     def get_ats_schema(self, ats: ATSType) -> Dict:
         return self.ats_schemas.get(ats.value, {})

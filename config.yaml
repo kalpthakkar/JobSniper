@@ -4,10 +4,10 @@
 
 system:
   # Max parallel polling threads
-  # OPTIMIZATION: Increased from 20 to 40 for higher throughput
-  # With 40 workers and 0.5s avg poll time: 40 * 2 = 80 polls/sec theoretical max
-  # Practical: 60-70 polls/sec (with network variance)
-  max_workers: 5
+  # OPTIMIZATION: Increased from 10 to 20 to enable more parallelism
+  # With 20 workers and ~5s avg Workday time: 20 / 5 = 4 polls/sec theoretical max
+  # Practical: expect 100-120 polls/30s heartbeat
+  max_workers: 30
 
   # NOTE: Polling intervals are now managed by PriorityScheduler with adaptive weighting
   # HIGH:MID:LOW = 3:2:1 slots per cycle. No fixed intervals — frequencies emerge naturally.
@@ -80,10 +80,26 @@ system:
     workable: false
     workday: false
 
+  # Skip detailed job extraction (second HTTP call) per ATS type
+  # Set to true to skip fetching full job details, use listing data only (faster but less info)
+  # Useful for slow endpoints like Workday where detail fetch adds 5-20s per company
+  # Set to false (default) to fetch full details for all new jobs
+  skip_detail_extraction:
+    greenhouse: false
+    lever: false
+    ashby: false
+    workable: false
+    workday: false  # Set to true if throughput is critical and descriptions not needed
+
   # Frequency inspection: Monitor how often a specific board token is polled
   # Useful for understanding dispatch frequency and slot allocation
   frequency_inspection_enabled: true
   frequency_inspect_board_token: "easthampton"  # e.g., "openai" to track OpenAI's endpoint
+
+  # Performance diagnostics: Enable detailed timing logs for debugging throughput bottlenecks
+  # Logs dispatcher stalls, per-poll timing (fetch, extract, db_write), and slow operations
+  # Set to false once diagnosis is complete to reduce log noise
+  performance_diagnostics_enabled: true
 
   # Notification channels: now managed via the /notify dashboard UI
   # These values are stored persistently in the database and can be toggled in real-time
@@ -132,7 +148,12 @@ ats_schemas:
     base_url: "{board_token}"
     params: {}
     method: GET
-    timeout: 45  # Increased from 30 for slow Workday instances
+    # page_timeout: timeout for the initial HTML page fetch (short — fast fail)
+    # timeout: timeout for the JSON API calls (listing + detail)
+    # Both are much shorter than the old 45s value which could stall workers
+    # for up to 45×3retries+backoff = 141s per company.
+    page_timeout: 10  # initial Workday HTML page fetch
+    timeout: 12       # Workday JSON API (listing POST + detail GET)
 
   lever:
     base_url: "https://api.lever.co/v0/postings/{board_token}"

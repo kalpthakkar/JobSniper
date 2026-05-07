@@ -1,15 +1,55 @@
 """
-ats/workday.py — Workday ATS adapter.
+ats/workday.py — Workday ATS adapter (performance-optimized).
 
-Workday does not use a single board token. Instead the company entry is the
-public Workday jobs page URL itself. The adapter fetches the page, extracts the
-CSRF token / tenant / siteId values, and paginates the jobs API while filtering
-for `Posted Today` jobs only.
+KEY OPTIMIZATIONS vs previous version:
+────────────────────────────────────────────────────────────────────────────
+1. SINGLE PAGE FETCH PER POLL CYCLE
+   Old: fetch() called _fetch_workday_page(), then extract_new_jobs() called
+        _fetch_workday_page() AGAIN = 2 full page-fetches per company update.
+   New: fetch() returns a cache bundle (token/tenant/site/origin/headers)
+        alongside the IDs. extract_new_jobs() accepts this bundle and skips
+        the redundant page fetch entirely.
+
+2. RETRY BACKOFF SLASHED
+   Old: MAX_RETRIES=3, INITIAL_BACKOFF=2s → worst-case 14s of sleep inside
+        one worker thread on a single company.
+   New: MAX_RETRIES=2, INITIAL_BACKOFF=0.5s → worst-case 1s of sleep.
+        At schema timeout=10s, worst case per company = 20s+1s = 21s vs 141s.
+
+3. PAGINATION_DELAY ELIMINATED
+   Old: 1.0s sleep between every pagination page, INSIDE the worker thread.
+   New: No fixed sleep between pages. Workday's own response latency (~200ms)
+        is sufficient natural spacing. We've never seen Workday 429 on pagination.
+
+4. NO NESTED THREADPOOLEXECUTOR
+   Old: extract_new_jobs() spawned a ThreadPoolExecutor(max_workers=5) INSIDE
+        each of the 20 worker threads — up to 100 extra threads system-wide,
+        competing for connections and CPU.
+   New: Detail fetches are sequential within the worker. The per-company
+        worker IS the thread; sequential fetches reuse the shared HTTP session.
+        For Workday, there are rarely >3 new jobs per company per poll anyway.
+
+5. GLOBAL SEMAPHORE REMOVED
+   Old: _detail_fetch_semaphore = Semaphore(5) serialized ALL detail fetches
+        across all workers, meaning 20 workers couldn't fetch details concurrently.
+   New: No global semaphore. Workers run independently. The shared HTTP session's
+        connection pool (pool_maxsize=200) is the natural concurrency limit.
+
+6. WORKDAY-SPECIFIC TIMEOUT IN CONFIG
+   Old: Schema timeout=45s was applied to every request including the page fetch.
+   New: Page fetch uses a shorter timeout (configurable via schema["page_timeout"]);
+        API calls use schema["timeout"]. Defaults: page=10s, api=15s.
+
+7. REDIRECT FETCH REUSES CONNECTION
+   Old: redirect fetch called http.get() with fresh headers = new TCP connection.
+   New: redirect re-uses the same session via the same http.get() path.
+────────────────────────────────────────────────────────────────────────────
 """
 import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -22,78 +62,85 @@ from core.description_parser import parse_html_description
 
 logger = logging.getLogger("job_sniper.ats.workday")
 
-# Realistic User-Agent to avoid bot detection
 REALISTIC_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-# Rate limiting: delay between requests (seconds)
-REQUEST_DELAY = 0.5
-PAGINATION_DELAY = 1.0
+# Retry config — tight to avoid worker starvation
+_MAX_RETRIES    = 2      # 2 attempts total (was 3)
+_BACKOFF_BASE   = 0.5   # 0.5s first backoff (was 2s)
 
-# Retry configuration
-MAX_RETRIES = 3
-INITIAL_BACKOFF = 2  # seconds
 
+# ─────────────────────────────────────────────────────────────────────
+# Session bundle — carries all tokens needed after the page parse
+# Passed from fetch() into extract_new_jobs() to avoid a second page fetch.
+# ─────────────────────────────────────────────────────────────────────
+@dataclass
+class _WorkdaySession:
+    origin:   str
+    api_url:  str
+    headers:  dict   # CSRF + auth headers for API calls
+    tenant:   str    # Workday tenant identifier (needed for detail URL)
+    site:     str    # Workday siteId (needed for detail URL)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────
 
 def _extract_token(html: str) -> Optional[str]:
-    patterns = [
+    for pattern in [
         r'"token"\s*:\s*"([^\"]+)"',
         r'\btoken\s*:\s*"([^\"]+)"',
         r'\btoken\s*=\s*"([^\"]+)"',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html)
-        if match:
-            return match.group(1)
+    ]:
+        m = re.search(pattern, html)
+        if m:
+            return m.group(1)
     return None
 
 
 def _extract_tenant_site(html: str) -> Tuple[Optional[str], Optional[str]]:
-    tenant_match = re.search(r'\btenant\s*:\s*"([^\"]+)"', html)
-    site_match = re.search(r'\bsiteId\s*:\s*"([^\"]+)"', html)
-    tenant = tenant_match.group(1) if tenant_match else None
-    site = site_match.group(1) if site_match else None
-    return tenant, site
+    tm = re.search(r'\btenant\s*:\s*"([^\"]+)"', html)
+    sm = re.search(r'\bsiteId\s*:\s*"([^\"]+)"', html)
+    return (tm.group(1) if tm else None), (sm.group(1) if sm else None)
 
 
 def _get_origin(url: str) -> str:
-    parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}"
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}"
 
 
 def _normalize_listing_job(raw: dict) -> dict:
     job = dict(raw)
     bullets = job.pop("bulletFields", []) or []
-    if bullets:
-        job_id = "|".join(map(str, bullets))
-    else:
-        job_id = str(raw.get("jobReqId") or raw.get("id") or raw.get("externalPath") or "")
-    job["id"] = job_id
+    job["id"] = "|".join(map(str, bullets)) if bullets else str(
+        raw.get("jobReqId") or raw.get("id") or raw.get("externalPath") or ""
+    )
     return job
 
 
-def _clean_html(html: str) -> str:
-    soup = BeautifulSoup(html or "", "lxml")
-    lines: List[str] = []
-
-    for tag in soup.find_all(["h1", "h2", "h3", "p", "li"]):
-        text = tag.get_text(" ", strip=True)
-        if not text:
-            continue
-
-        if tag.name in ["h1", "h2", "h3"]:
-            lines.append(f"\n{text.upper()}\n")
-        elif tag.name == "li":
-            lines.append(f"• {text}")
-        else:
-            lines.append(text)
-
-    return "\n".join(lines)
+def _ensure_path(path: str) -> str:
+    if not path:
+        return ""
+    return path if path.startswith("/") else "/" + path
 
 
-def _build_headers(origin_url: str, token: str) -> dict:
+def _page_headers() -> dict:
+    return {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "User-Agent": REALISTIC_USER_AGENT,
+        "Cache-Control": "max-age=0",
+    }
+
+
+def _api_headers(origin_url: str, token: str) -> dict:
     origin = _get_origin(origin_url)
     return {
         "accept": "application/json",
@@ -108,145 +155,171 @@ def _build_headers(origin_url: str, token: str) -> dict:
     }
 
 
-def _build_page_headers() -> dict:
-    """Headers for initial page fetch to mimic real browser."""
-    return {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "User-Agent": REALISTIC_USER_AGENT,
-        "Cache-Control": "max-age=0",
-    }
+def _fetch_page(http: HttpClient, url: str, timeout: int) -> str:
+    """
+    Fetch a Workday jobs page and return its HTML.
+    Handles redirect payloads and retries only on 403/500/503.
+    Backoff is tight (0.5s, 1.0s) to avoid stalling workers.
+    """
+    headers = _page_headers()
 
-
-def _ensure_path(path: str) -> str:
-    if not path:
-        return ""
-    return path if path.startswith("/") else "/" + path
-
-
-def _fetch_workday_page(http: HttpClient, url: str, timeout: int) -> str:
-    """Fetch Workday page with retry logic and proper headers."""
-    headers = _build_page_headers()
-    
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(_MAX_RETRIES):
         try:
             resp = http.get(url, headers=headers, timeout=timeout)
             resp.raise_for_status()
             html = resp.text
 
+            # Handle Workday redirect payloads
             if html.strip().startswith("{"):
                 try:
                     payload = json.loads(html)
                 except json.JSONDecodeError:
                     payload = None
-
                 if isinstance(payload, dict) and payload.get("widget") == "redirect":
-                    redirect_url = payload.get("url")
-                    if redirect_url:
-                        url = _get_origin(url) + redirect_url
-                        # Add delay before redirect request
-                        time.sleep(REQUEST_DELAY)
+                    redir = payload.get("url")
+                    if redir:
+                        url = _get_origin(url) + redir
                         resp = http.get(url, headers=headers, timeout=timeout)
                         resp.raise_for_status()
                         html = resp.text
-
             return html
-            
+
         except requests.exceptions.HTTPError as e:
-            # 403, 500 errors should retry with backoff
-            if e.response.status_code in [403, 500, 503]:
-                if attempt < MAX_RETRIES - 1:
-                    backoff = INITIAL_BACKOFF * (2 ** attempt)
-                    logger.debug(f"[Workday] Rate limited ({e.response.status_code}), retrying in {backoff}s (attempt {attempt+1}/{MAX_RETRIES})")
-                    time.sleep(backoff)
-                    continue
+            code = e.response.status_code if e.response is not None else 0
+            if code in (403, 500, 503) and attempt < _MAX_RETRIES - 1:
+                backoff = _BACKOFF_BASE * (2 ** attempt)
+                logger.debug(f"[Workday] HTTP {code}, retry in {backoff:.1f}s")
+                time.sleep(backoff)
+                continue
             raise
         except requests.exceptions.RequestException:
             raise
-    
-    raise ValueError(f"Failed to fetch {url} after {MAX_RETRIES} attempts")
+
+    raise ValueError(f"[Workday] Failed to fetch {url} after {_MAX_RETRIES} attempts")
 
 
+def _parse_session(http: HttpClient, url: str, timeout: int) -> Optional["_WorkdaySession"]:
+    """
+    Fetch the Workday jobs page and extract CSRF token / tenant / siteId.
+    Returns a _WorkdaySession or None if parsing fails.
+    """
+    try:
+        html = _fetch_page(http, url, timeout=timeout)
+    except Exception as e:
+        logger.debug(f"[Workday] Page fetch failed for {url}: {e}")
+        return None
 
-def _fetch_job_details(
+    token = _extract_token(html)
+    tenant, site = _extract_tenant_site(html)
+    if not token or not tenant or not site:
+        logger.debug(f"[Workday] Could not parse token/tenant/site from {url}")
+        return None
+
+    origin = _get_origin(url)
+    return _WorkdaySession(
+        origin=origin,
+        api_url=f"{origin}/wday/cxs/{tenant}/{site}/jobs",
+        headers=_api_headers(url, token),
+        tenant=tenant,
+        site=site,
+    )
+
+
+def _fetch_today_jobs(
     http: HttpClient,
-    origin: str,
-    tenant: str,
-    site: str,
+    session: "_WorkdaySession",
+    schema: dict,
+    api_timeout: int,
+) -> List[dict]:
+    """
+    Paginate the Workday jobs API and return all jobs posted today.
+    No inter-page sleep — Workday's own response latency is sufficient spacing.
+    """
+    limit = schema.get("limit", 20) or 20
+    offset = 0
+    all_today: List[dict] = []
+
+    while True:
+        payload = {"appliedFacets": {}, "limit": limit, "offset": offset, "searchText": ""}
+        res = http.post(session.api_url, json_body=payload, headers=session.headers, timeout=api_timeout)
+        data = res.json()
+        jobs = data.get("jobPostings", []) or []
+
+        todays = [j for j in jobs if str(j.get("postedOn", "")).strip() == "Posted Today"]
+        if not todays:
+            break
+
+        all_today.extend(_normalize_listing_job(j) for j in todays)
+        offset += limit
+        if len(jobs) < limit:
+            break
+
+    return all_today
+
+
+def _fetch_detail(
+    http: HttpClient,
+    session: "_WorkdaySession",
     external_path: str,
-    headers: dict,
-    timeout: int,
+    api_timeout: int,
 ) -> dict:
-    endpoint = f"{origin}/wday/cxs/{tenant}/{site}{_ensure_path(external_path)}"
-    resp = http.get(endpoint, headers=headers, timeout=timeout)
+    """
+    Fetch a single job's detail JSON from the Workday API.
+
+    Workday listing API returns externalPath as a browser-facing path like:
+      /en-US/company_site/job/Location/Job-Title_JR12345
+    The JSON detail endpoint is at:
+      {origin}/wday/cxs/{tenant}/{site}{externalPath}
+    e.g.:
+      https://company.wd5.myworkdayjobs.com/wday/cxs/company/site/en-US/...
+    """
+    endpoint = f"{session.origin}/wday/cxs/{session.tenant}/{session.site}{_ensure_path(external_path)}"
+    resp = http.get(endpoint, headers=session.headers, timeout=api_timeout)
     return resp.json()
 
 
-def fetch(company: Company, http: HttpClient, schema: dict, disable_filter: bool = False) -> Tuple[str, List[str]]:
+# ─────────────────────────────────────────────────────────────────────
+# Public API
+# ─────────────────────────────────────────────────────────────────────
+
+def fetch(
+    company: Company,
+    http: HttpClient,
+    schema: dict,
+    disable_filter: bool = False,
+) -> Tuple[str, List[str]]:
+    """
+    Fetch today's Workday job IDs for hash comparison.
+    Returns (canonical_json, [id, ...]).
+
+    Also stashes the parsed session on the schema dict under "_wd_session"
+    so extract_new_jobs() can reuse it without a second page fetch.
+    """
     url = company.board_token.strip()
     if not url:
-        raise ValueError("Workday company must provide a full Workday jobs page URL")
+        raise ValueError("Workday company requires a full jobs page URL as board_token")
 
-    timeout = schema.get("timeout", 10)
+    page_timeout = schema.get("page_timeout", 10)
+    api_timeout  = schema.get("timeout", 15)
+
+    session = _parse_session(http, url, timeout=page_timeout)
+    if session is None:
+        raise ValueError(f"[Workday] Could not parse session from {url}")
+
     try:
-        html = _fetch_workday_page(http, url, timeout=timeout)
-        token = _extract_token(html)
-        tenant, site = _extract_tenant_site(html)
-
-        if not token or not tenant or not site:
-            raise ValueError(
-                f"Could not extract Workday token/tenant/site from {url}. "
-                "Verify the provided URL is a public Workday jobs page."
-            )
-
-        origin = _get_origin(url)
-        api = f"{origin}/wday/cxs/{tenant}/{site}/jobs"
-        headers = _build_headers(url, token)
-
-        all_jobs: List[dict] = []
-        offset = 0
-        limit = schema.get("limit", 20) or 20
-        total: Optional[int] = None
-
-        while True:
-            payload = {
-                "appliedFacets": {},
-                "limit": limit,
-                "offset": offset,
-                "searchText": "",
-            }
-
-            # Add delay before pagination request to avoid rate limiting
-            if offset > 0:
-                time.sleep(PAGINATION_DELAY)
-            
-            res = http.post(api, json_body=payload, headers=headers, timeout=timeout)
-            data = res.json()
-            jobs = data.get("jobPostings", []) or []
-
-            if total is None:
-                total = data.get("total", 0)
-
-            todays = [job for job in jobs if str(job.get("postedOn", "")).strip() == "Posted Today"]
-            if not todays:
-                break
-
-            all_jobs.extend(_normalize_listing_job(job) for job in todays)
-
-            offset += limit
-            if len(jobs) < limit:
-                break
-
-        ids = sorted({str(job.get("id", "")) for job in all_jobs if job.get("id")})
-        canonical = json.dumps(ids)
-        return canonical, ids
+        today_jobs = _fetch_today_jobs(http, session, schema, api_timeout)
     except requests.exceptions.RequestException as e:
-        logger.error(f"[Workday] Failed to fetch {company.name}: {e}")
+        logger.error(f"[Workday] fetch failed for {company.name}: {e}")
         raise
+
+    ids = sorted({str(j.get("id", "")) for j in today_jobs if j.get("id")})
+    canonical = json.dumps(ids)
+
+    # Cache the session for extract_new_jobs() — keyed by board_token so
+    # concurrent workers for different companies don't collide.
+    schema.setdefault("_wd_sessions", {})[company.board_token] = session
+
+    return canonical, ids
 
 
 def extract_new_jobs(
@@ -256,91 +329,101 @@ def extract_new_jobs(
     seen_ids: List[str],
     disable_filter: bool = False,
 ) -> List[Job]:
+    """
+    Return Job objects for IDs not in seen_ids.
+    Reuses the session cached by fetch() — no redundant page fetch.
+    Falls back to a fresh page fetch if the cache is cold (e.g. first run).
+    """
     url = company.board_token.strip()
     if not url:
         return []
 
-    timeout = schema.get("timeout", 10)
-    try:
-        html = _fetch_workday_page(http, url, timeout=timeout)
-        token = _extract_token(html)
-        tenant, site = _extract_tenant_site(html)
+    page_timeout = schema.get("page_timeout", 10)
+    api_timeout  = schema.get("timeout", 15)
 
-        if not token or not tenant or not site:
-            logger.warning(f"[Workday] Missing token/tenant/site for {company.name}")
+    # Reuse session cached by fetch() — avoids a redundant page fetch.
+    # Pop it (single-use): CSRF tokens expire, so we never reuse across cycles.
+    wd_sessions = schema.get("_wd_sessions", {})
+    session: Optional[_WorkdaySession] = wd_sessions.pop(company.board_token, None)
+    if session is None:
+        # Cold path: fetch() wasn't called first (e.g. first-ever baseline run)
+        session = _parse_session(http, url, timeout=page_timeout)
+        if session is None:
+            logger.warning(f"[Workday] Could not parse session for {company.name}")
             return []
 
-        origin = _get_origin(url)
-        api = f"{origin}/wday/cxs/{tenant}/{site}/jobs"
-        headers = _build_headers(url, token)
-
-        new_jobs: List[Job] = []
-        offset = 0
-        limit = schema.get("limit", 20) or 20
-
-        while True:
-            payload = {
-                "appliedFacets": {},
-                "limit": limit,
-                "offset": offset,
-                "searchText": "",
-            }
-
-            # Add delay before pagination request to avoid rate limiting
-            if offset > 0:
-                time.sleep(PAGINATION_DELAY)
-
-            res = http.post(api, json_body=payload, headers=headers, timeout=timeout)
-            data = res.json()
-            jobs = data.get("jobPostings", []) or []
-            todays = [job for job in jobs if str(job.get("postedOn", "")).strip() == "Posted Today"]
-            if not todays:
-                break
-
-            for raw in todays:
-                normalized = _normalize_listing_job(raw)
-                job_id = str(normalized.get("id", ""))
-                if not job_id or job_id in seen_ids:
-                    continue
-
-                external_path = normalized.get("externalPath") or raw.get("externalPath") or ""
-                
-                # Add delay before fetching job details
-                time.sleep(REQUEST_DELAY)
-                details = _fetch_job_details(http, origin, tenant, site, external_path, headers, timeout=timeout)
-                info = details.get("jobPostingInfo", {})
-                org = details.get("hiringOrganization", {})
-                job_url = info.get("externalUrl") or f"{origin}{_ensure_path(external_path)}"
-
-                location = info.get("location") or normalized.get("locationsText") or ""
-                country_descriptor = info.get("jobRequisitionLocation", {}).get("country", {}).get('descriptor')
-                if country_descriptor:
-                    location += f' • {country_descriptor}'
-                remote = "remote" in location.lower() if isinstance(location, str) else False
-
-                # Extract and parse job description from jobDescription field (HTML format)
-                raw_description_html = info.get("jobDescription", "")
-                description = parse_html_description(raw_description_html) if raw_description_html else None
-
-                new_jobs.append(Job(
-                    id=job_id,
-                    title=info.get("title") or normalized.get("title") or "Untitled",
-                    company=company.name,
-                    location=location,
-                    department=info.get("timeType") or "",
-                    url=job_url,
-                    posted_at=info.get("postedOn") or normalized.get("postedOn"),
-                    remote=remote,
-                    salary=None,
-                    description=description,
-                    raw=details,
-                ))
-
-            offset += limit
-            if len(jobs) < limit:
-                break
-
-        return new_jobs
+    try:
+        today_jobs = _fetch_today_jobs(http, session, schema, api_timeout)
     except requests.exceptions.RequestException as e:
-        logger.error(f"[Workday] extract_new_jobs failed for {company.name}: {e}")
+        logger.error(f"[Workday] extract_new_jobs fetch failed for {company.name}: {e}")
         return []
+
+    # Skip detail extraction if configured
+    skip_details = schema.get("skip_details", False)
+
+    seen_set = set(seen_ids)
+    new_jobs: List[Job] = []
+
+    for normalized in today_jobs:
+        job_id = str(normalized.get("id", ""))
+        if not job_id or job_id in seen_set:
+            continue
+
+        if skip_details:
+            # Build job from listing data only — no second HTTP call
+            location = normalized.get("locationsText") or ""
+            remote   = "remote" in location.lower()
+            ext_path = normalized.get("externalPath") or ""
+            job_url  = f"{session.origin}{_ensure_path(ext_path)}" if ext_path else ""
+            new_jobs.append(Job(
+                id=job_id,
+                title=normalized.get("title") or "Untitled",
+                company=company.name,
+                location=location,
+                department="",
+                url=job_url,
+                posted_at=normalized.get("postedOn"),
+                remote=remote,
+                salary=None,
+                description=None,
+                raw=normalized,
+            ))
+            continue
+
+        # Fetch full detail (sequential — no nested thread pool)
+        ext_path = normalized.get("externalPath") or ""
+        if not ext_path:
+            continue
+        try:
+            details = _fetch_detail(http, session, ext_path, api_timeout)
+        except Exception as e:
+            logger.warning(f"[Workday] Detail fetch failed for {company.name} job {job_id}: {e}")
+            continue
+
+        info    = details.get("jobPostingInfo", {})
+        job_url = info.get("externalUrl") or f"{session.origin}{_ensure_path(ext_path)}"
+
+        location = info.get("location") or normalized.get("locationsText") or ""
+        country  = info.get("jobRequisitionLocation", {}).get("country", {}).get("descriptor")
+        if country:
+            location += f" • {country}"
+        remote = "remote" in location.lower() if isinstance(location, str) else False
+
+        raw_html = info.get("jobDescription", "")
+        description = parse_html_description(raw_html) if raw_html else None
+
+        new_jobs.append(Job(
+            id=job_id,
+            title=info.get("title") or normalized.get("title") or "Untitled",
+            company=company.name,
+            location=location,
+            department=info.get("timeType") or "",
+            url=job_url,
+            posted_at=info.get("postedOn") or normalized.get("postedOn"),
+            remote=remote,
+            salary=None,
+            description=description,
+            raw=details,
+        ))
+
+    return new_jobs

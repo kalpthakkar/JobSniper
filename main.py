@@ -72,9 +72,13 @@ def setup_logging(level: str):
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     datefmt = "%H:%M:%S"
     
-    # Configure stdout for line buffering
+    # Configure stdout for UTF-8 encoding (Windows compatibility)
     if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(line_buffering=True)
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+        except (AttributeError, ValueError):
+            # Fallback if reconfigure fails
+            pass
     
     # Use an unbounded queue so the listener never applies back-pressure.
     # Memory cost is negligible: a log record is ~1 KB; even 50 000 queued
@@ -82,7 +86,7 @@ def setup_logging(level: str):
     log_queue: queue.Queue = queue.Queue()  # unbounded — listener drains faster than workers produce
     queue_handler = NonBlockingQueueHandler(log_queue)
     
-    # Create a listener that drains the queue and writes to console
+    # Create a listener that drains the queue and writes to console with UTF-8 encoding
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
     listener = logging.handlers.QueueListener(log_queue, stream_handler, respect_handler_level=True)

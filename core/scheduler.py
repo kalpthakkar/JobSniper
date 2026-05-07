@@ -125,7 +125,7 @@ class AdaptiveRateController:
 
     def __init__(
         self,
-        base_gap_s: float = 0.1,       # default time between dispatches (seconds)
+        base_gap_s: float = 0.033,       # default time between dispatches (seconds)
         max_gap_s: float  = 5.0,        # ceiling on the gap
         window: int       = 50,         # rolling window of recent outcomes
         threshold: float  = 0.30,       # failure rate above this → start backing off

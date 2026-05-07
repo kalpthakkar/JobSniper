@@ -178,8 +178,22 @@ class PollOrchestrator:
         self._update_ats_schemas()
 
     def _update_ats_schemas(self):
-        """Update ATS schemas cache for current set of companies."""
-        self.ats_schemas = {c.ats: self.config.get_ats_schema(c.ats) for c in self.companies}
+        """
+        Update ATS schemas cache for current set of companies.
+
+        skip_details and other config flags are injected into each schema dict
+        HERE — once per adapter reload — rather than on every poll call.
+        The schema dict is shared by all worker threads for the same ATS type;
+        adapters may only add sub-keyed cache entries (e.g. _wd_sessions keyed
+        by board_token) so concurrent workers never collide.
+        """
+        schemas = {}
+        for c in self.companies:
+            if c.ats not in schemas:
+                schema = dict(self.config.get_ats_schema(c.ats))  # own copy per ATS
+                schema["skip_details"] = self.config.skip_detail_extraction.get(c.ats.value, False)
+                schemas[c.ats] = schema
+        self.ats_schemas = schemas
 
     def start(self):
         logger.info(
@@ -457,6 +471,7 @@ class PollOrchestrator:
         Thread-safe: acquires scheduler_lock briefly to get next company, allowing
         config monitor to reinitialize scheduler without blocking long.
         """
+        stalls = 0
         try:
             while not self._stop.is_set():
                 # Call next_company() WITHOUT _scheduler_lock.
@@ -470,10 +485,19 @@ class PollOrchestrator:
 
                 if state is None:
                     # All companies cooling down — sleep until soonest is ready
+                    stalls += 1
                     sleep_for = max(self.scheduler.soonest_ready_in(), 0.1)
-                    logger.debug(f"Dispatcher: no work available, sleeping {sleep_for:.2f}s")
+                    
+                    if self.config.performance_diagnostics_enabled and stalls % 10 == 0:
+                        logger.warning(
+                            f"⚠️  Dispatcher: No ready companies (stall #{stalls}) — "
+                            f"sleeping {sleep_for:.2f}s until next is available"
+                        )
+                    
                     self._stop.wait(sleep_for)  # interruptible
                     continue
+                else:
+                    stalls = 0
 
                 try:
                     self.executor.submit(self._poll_company, state)
@@ -532,16 +556,27 @@ class PollOrchestrator:
             logger.debug(f"[{company.name}] Skipped during poll (schema not found for {company.ats.value})")
             return
 
+        poll_start = time.monotonic() if self.config.performance_diagnostics_enabled else 0
+        fetch_time = 0
+        extract_time = 0
+        db_time = 0
+
         # ── HTTP call 1: fetch for hash/ID check ──────────────────────
         # Check if 24h filter is disabled for this ATS type
         disable_filter = self.config.disable_24h_filter.get(company.ats.value, False)
+        
+        fetch_start = time.monotonic() if self.config.performance_diagnostics_enabled else 0
         raw_text, all_ids = ats_router.fetch(company, self.http, schema, disable_filter=disable_filter)
+        fetch_time = time.monotonic() - fetch_start if self.config.performance_diagnostics_enabled else 0
 
         # ── Pure logic ────────────────────────────
         new_hash = JobDatabase.compute_hash(raw_text)
 
         if not self.db.has_changed(company.board_token, company.ats.value, new_hash):
-            logger.debug(f"[{company.name}] ✓ No change")
+            if self.config.performance_diagnostics_enabled and fetch_time > 1.0:
+                logger.debug(f"[{company.name}] ✓ No change (fetch: {fetch_time:.3f}s)")
+            else:
+                logger.debug(f"[{company.name}] ✓ No change")
             return
 
         existing = self.db.get_record(company.board_token, company.ats.value)
@@ -573,16 +608,34 @@ class PollOrchestrator:
         if truly_new_ids:
             # Check if 24h filter is disabled for this ATS type
             disable_filter = self.config.disable_24h_filter.get(company.ats.value, False)
+            
+            extract_start = time.monotonic() if self.config.performance_diagnostics_enabled else 0
             new_jobs = ats_router.extract_new_jobs(company, self.http, schema, seen_ids, disable_filter=disable_filter)
+            extract_time = time.monotonic() - extract_start if self.config.performance_diagnostics_enabled else 0
+            
             if new_jobs:
-                logger.info(f"[{company.name}] 🚨 {len(new_jobs)} NEW job(s)!")
+                if self.config.performance_diagnostics_enabled and extract_time > 1.0:
+                    logger.info(f"[{company.name}] 🚨 {len(new_jobs)} NEW job(s)! (extract: {extract_time:.3f}s)")
+                else:
+                    logger.info(f"[{company.name}] 🚨 {len(new_jobs)} NEW job(s)!")
                 self.notifier.notify(new_jobs)
 
         if removed_ids:
             logger.info(f"[{company.name}] ➖ {len(removed_ids)} job(s) removed: {removed_ids}")
 
         merged = list(set(kept_ids) | set(all_ids))
+        
+        db_start = time.monotonic() if self.config.performance_diagnostics_enabled else 0
         self.db.update(company.board_token, company.ats.value, new_hash, merged, metadata=metadata)
+        db_time = time.monotonic() - db_start if self.config.performance_diagnostics_enabled else 0
+        
+        if self.config.performance_diagnostics_enabled:
+            total_time = time.monotonic() - poll_start
+            if total_time > 1.0 or db_time > 0.1:
+                logger.debug(
+                    f"[{company.name}] Poll timing — fetch: {fetch_time:.3f}s, "
+                    f"extract: {extract_time:.3f}s, db_write: {db_time:.3f}s, total: {total_time:.3f}s"
+                )
 
     def stop(self):
         logger.info("⏹  Shutting down Job Sniper…")
