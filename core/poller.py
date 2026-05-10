@@ -197,7 +197,7 @@ class PollOrchestrator:
 
     def start(self):
         logger.info(
-            f"🚀 Job Sniper starting — "
+            f"🚀🚀🚀 Job Sniper starting — "
             f"{len(self.companies)} companies | "
             f"max_workers={self.config.max_workers}"
         )

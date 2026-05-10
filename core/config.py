@@ -26,6 +26,7 @@ class Config:
         self.notify_channels: List[str] = self.system.get("notify_channels", ["console"])
         self.telegram: Dict             = self.system.get("telegram", {})
         self.webhook: Dict              = self.system.get("webhook", {})
+        self.nats: Dict                 = self.system.get("nats", {})
         self.log_level: str             = self.system.get("log_level", "INFO")
 
         # Google settings

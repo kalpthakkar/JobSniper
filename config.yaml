@@ -106,7 +106,7 @@ system:
   # Legacy support: this list is used as defaults on first startup
   notify_channels:
     - console
-    - telegram
+    - nats
 
   # Telegram bot config (only used if 'telegram' in notify_channels)
   telegram:
@@ -118,6 +118,11 @@ system:
     url: "https://your-webhook-url.com/notify"
     headers:
       Content-Type: "application/json"
+
+  # NATS config (only used if 'nats' in notify_channels)
+  nats:
+    servers: ["nats://localhost:4222"]
+    subject: "job_sniper.jobs"
 
 # ============================================================
 # ATS Endpoint Schemas

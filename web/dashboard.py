@@ -143,6 +143,7 @@ def get_notification_channels():
         "console": db.get_setting("notify_channel_console") != "false",
         "telegram": db.get_setting("notify_channel_telegram") != "false",
         "webhook": db.get_setting("notify_channel_webhook") != "false",
+        "nats": db.get_setting("notify_channel_nats") != "false",
     }
     return {"channels": channels, "status": "ok"}
 
@@ -153,7 +154,7 @@ def toggle_notification_channel():
     channel = data.get("channel", "").lower()
     enabled = data.get("enabled", True)
     
-    if channel not in ["console", "telegram", "webhook"]:
+    if channel not in ["console", "telegram", "webhook", "nats"]:
         return {"status": "error", "message": "Invalid channel"}, 400
     
     key = f"notify_channel_{channel}"

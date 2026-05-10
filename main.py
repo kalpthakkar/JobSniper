@@ -128,8 +128,8 @@ Examples:
     parser.add_argument("--company", default=None,          help="One-shot probe a single board_token")
     parser.add_argument("--list",    action="store_true",   help="List all companies in database and exit")
     parser.add_argument("--dashboard", action="store_true", help="Run web dashboard for company management")
-    parser.add_argument("--token-start", type=int, default=None, help="Token window start index (for multi-instance): polls companies[start:stop]")
-    parser.add_argument("--token-stop", type=int, default=None, help="Token window stop index (for multi-instance): polls companies[start:stop]")
+    parser.add_argument("--token-start", type=int, default=None, help="Token window start index (1-based inclusive) for multi-instance polling")
+    parser.add_argument("--token-stop", type=int, default=None, help="Token window stop index (1-based inclusive) for multi-instance polling")
     return parser.parse_args()
 
 
@@ -144,33 +144,44 @@ def get_enabled_companies(companies: List[Company], db: JobDatabase, token_start
     2. Its ATS type is enabled (settings stored in DB)
     3. (Optional) Within token_start:token_stop window for multi-instance setup
     """
-    enabled_companies = []
-    
-    # First apply token window if specified (for multi-instance support)
-    if token_start is not None or token_stop is not None:
-        start = token_start or 0
-        stop = token_stop or len(companies)
-        windowed_companies = companies[start:stop]
-        logger.info(f"🪟 Token window enabled: [{start}:{stop}] of {len(companies)} total companies")
-    else:
-        windowed_companies = companies
-    
-    for company in windowed_companies:
+    filtered = []
+    for company in companies:
         if not company.enabled:
-            logger.debug(f"[FILTER] {company.name} ({company.ats.value}) — disabled (company flag)")
             continue
-        
-        # Check if this ATS type is enabled in settings
+
         ats_setting = db.get_setting(f"ats_{company.ats.value}")
-        is_ats_enabled = ats_setting != "false"  # Default to True if not set
-        
-        if not is_ats_enabled:
-            logger.debug(f"[FILTER] {company.name} ({company.ats.value}) — disabled (ATS type disabled)")
+        if ats_setting == "false":
             continue
-        
-        enabled_companies.append(company)
-    
-    return enabled_companies
+
+        filtered.append(company)
+
+    filtered.sort(key=lambda c: c.board_token)
+
+    if token_start is None and token_stop is None:
+        return filtered
+
+    start = token_start if token_start is not None else 1
+    stop = token_stop if token_stop is not None else len(filtered)
+
+    if start < 1:
+        start = 1
+    if stop < start:
+        logger.warning(
+            f"🪟 Token window empty: start={token_start} stop={token_stop} "
+            f"(after normalization: [{start}:{stop}]). No companies will be polled."
+        )
+        return []
+
+    start_idx = start - 1
+    stop_idx = min(stop, len(filtered))
+    windowed_companies = filtered[start_idx:stop_idx]
+
+    logger.info(
+        f"🪟 Token window enabled: [{start}:{stop}] (1-based inclusive) "
+        f"→ selected {len(windowed_companies)} of {len(filtered)} enabled ATS companies"
+    )
+
+    return windowed_companies
 
 
 # ─────────────────────────────────────────────────────────────
@@ -239,7 +250,7 @@ def main():
 
     # ------ --list ------
     if args.list:
-        enabled_list = get_enabled_companies(companies, db)
+        enabled_list = get_enabled_companies(companies, db, args.token_start, args.token_stop)
         print(f"\nTracked companies ({len(enabled_list)} enabled of {len(companies)} total):\n")
         for c in enabled_list:
             print(f"  [{c.priority.value:4s}] {c.name:30s} | ATS: {c.ats.value:12s} | token: {c.board_token}")
@@ -281,7 +292,7 @@ def main():
             db.set_setting(setting_key, "true")  # Default to enabled if not set
     
     # Ensure all channels have a setting (even if not in config)
-    for channel in ["console", "telegram", "webhook"]:
+    for channel in ["console", "telegram", "webhook", "nats"]:
         setting_key = f"notify_channel_{channel}"
         if db.get_setting(setting_key) is None:
             # Default based on whether it's in config
@@ -291,6 +302,7 @@ def main():
     notifier = Notifier(
         telegram_cfg=config.telegram,
         webhook_cfg=config.webhook,
+        nats_cfg=config.nats,
         db=db,
     )
 
@@ -323,7 +335,7 @@ def main():
         request_timeout=config.microsoft_request_timeout,
     )
     
-    orchestrator = PollOrchestrator(companies, config, db, http, notifier, google_poller, tesla_poller, apple_poller, microsoft_poller)
+    orchestrator = PollOrchestrator(enabled_companies, config, db, http, notifier, google_poller, tesla_poller, apple_poller, microsoft_poller)
 
     # Start Google, Tesla, and Apple pollers based on their settings (already checked for validation above)
     if google_enabled:
@@ -359,6 +371,7 @@ def main():
         tesla_poller.stop()
         apple_poller.stop()
         microsoft_poller.stop()
+        notifier.stop()
         listener.stop()  # Drain remaining logs from queue
         logger.info("Job Sniper stopped.")
 

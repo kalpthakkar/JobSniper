@@ -1,0 +1,16 @@
+https://boards-api.greenhouse.io/v1/boards/singulargenomics/jobs?content=true
+https://boards-api.greenhouse.io/v1/boards/brightflag/jobs?content=true
+https://boards-api.greenhouse.io/v1/boards/hyperiondev/jobs?content=true
+https://boards-api.greenhouse.io/v1/boards/ushur/jobs?content=true
+https://boards-api.greenhouse.io/v1/boards/coinbase/jobs?content=true
+https://boards-api.greenhouse.io/v1/boards/qualifiedhealth/jobs?content=true
+https://boards-api.greenhouse.io/v1/boards/neuroflow/jobs?content=true
+https://boards-api.greenhouse.io/v1/boards/intellishore/jobs?content=true
+https://api.ashbyhq.com/posting-api/job-board/continua?includeCompensation=true
+https://api.ashbyhq.com/posting-api/job-board/lindushealth?includeCompensation=true
+https://api.ashbyhq.com/posting-api/job-board/flentasticjobs?includeCompensation=true
+https://api.ashbyhq.com/posting-api/job-board/airweave?includeCompensation=true
+https://api.ashbyhq.com/posting-api/job-board/airnxt?includeCompensation=true
+https://api.ashbyhq.com/posting-api/job-board/amca?includeCompensation=true
+https://api.ashbyhq.com/posting-api/job-board/retool?includeCompensation=true
+https://api.lever.co/v0/postings/supernovacompanies?mode=json&limit=50

@@ -5,10 +5,13 @@ Supported channels:
   console  — Rich coloured terminal output (always available)
   telegram — Sends a Telegram message via Bot API
   webhook  — POSTs JSON payload to a configured URL
+  nats     — Publishes to NATS subject with mini-batch streaming
 """
+import asyncio
 import json
 import logging
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
@@ -31,18 +34,30 @@ _DIM    = "\033[2m"
 
 
 class Notifier:
-    def __init__(self, telegram_cfg: dict, webhook_cfg: dict, db: Optional[Any] = None):
+    def __init__(self, telegram_cfg: dict, webhook_cfg: dict, nats_cfg: dict, db: Optional[Any] = None):
         """
         Initialize notifier. Channels are now read from database, not passed in.
         
         Args:
             telegram_cfg: Telegram bot config (bot_token, chat_id)
             webhook_cfg: Webhook config (url, headers)
+            nats_cfg: NATS config (servers, subject)
             db: JobDatabase instance for reading channel settings
         """
         self.telegram = telegram_cfg
         self.webhook = webhook_cfg
+        self.nats_cfg = nats_cfg
         self.db = db
+        
+        # NATS mini-batch buffer
+        self._nats_buffer: List[Job] = []
+        self._nats_lock = threading.Lock()
+        self._nats_batch_thread: Optional[threading.Thread] = None
+        self._nats_stop_event = threading.Event()
+        
+        # Start NATS batch thread if NATS is configured
+        if self.nats_cfg.get("servers"):
+            self._start_nats_batch_thread()
 
     def _get_enabled_channels(self) -> List[str]:
         """Read currently enabled notification channels from database."""
@@ -64,6 +79,11 @@ class Notifier:
         if (self.db.get_setting("notify_channel_webhook") != "false" and
             self.webhook.get("url")):
             channels.append("webhook")
+        
+        # NATS (only if configured)
+        if (self.db.get_setting("notify_channel_nats") != "false" and
+            self.nats_cfg.get("servers")):
+            channels.append("nats")
         
         return channels
 
@@ -105,6 +125,8 @@ class Notifier:
                     self._telegram(filtered_jobs)
                 elif channel == "webhook":
                     self._webhook(filtered_jobs)
+                elif channel == "nats":
+                    self._nats(filtered_jobs)
                 else:
                     logger.warning(f"Unknown notification channel: {channel}")
             except Exception as e:
@@ -283,42 +305,128 @@ class Notifier:
             text = text.replace(ch, f"\\{ch}")
         return text
 
-    # ------------------------------------------------------------------
-    # Webhook
-    # ------------------------------------------------------------------
-    def _webhook(self, jobs: List[Job]):
-        url     = self.webhook.get("url", "")
-        headers = self.webhook.get("headers", {})
-        if not url:
-            logger.warning("[notifier] Webhook URL not configured — skipping")
+    def _nats(self, jobs: List[Job]):
+        """Add jobs to NATS mini-batch buffer."""
+        if not self.nats_cfg.get("servers"):
+            logger.warning("[notifier] NATS not configured — skipping")
             return
 
-        logger.info(f"[notifier] 🪝 Posting {len(jobs)} job(s) to webhook")
+        logger.info(f"[notifier] 📡 Adding {len(jobs)} job(s) to NATS batch buffer")
         
-        payload = {
-            "event":     "new_jobs_detected",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "count":     len(jobs),
-            "jobs": [
-                {
-                    "id":         j.id,
-                    "title":      j.title,
-                    "company":    j.company,
-                    "location":   j.location,
-                    "department": j.department,
-                    "url":        j.url,
-                    "posted_at":  j.posted_at,
-                    "remote":     j.remote,
-                    "salary":     j.salary,
-                    "description": format_for_webhook(j.description),  # Full description
-                }
-                for j in jobs
-            ],
-        }
-        
+        with self._nats_lock:
+            self._nats_buffer.extend(jobs)
+
+    def _start_nats_batch_thread(self):
+        """Start background thread for NATS mini-batch publishing."""
+        self._nats_batch_thread = threading.Thread(target=self._nats_batch_loop, daemon=True)
+        self._nats_batch_thread.start()
+        logger.debug("[notifier] NATS batch thread started")
+
+    def _nats_batch_loop(self):
+        """Background loop that publishes NATS messages every 10 seconds."""
+        # Run async NATS publishing in this thread
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
-            response.raise_for_status()
-            logger.debug(f"[notifier] Webhook POST successful (status {response.status_code})")
+            asyncio.run(self._nats_async_loop())
         except Exception as e:
-            logger.error(f"[notifier] Webhook POST failed: {e}")
+            logger.error(f"[nats] Fatal error in batch loop: {e}", exc_info=True)
+    
+    async def _nats_async_loop(self):
+        """Async loop for NATS mini-batch publishing with reconnection."""
+        import nats
+        
+        servers = self.nats_cfg.get("servers", [])
+        subject = self.nats_cfg.get("subject", "job_sniper.jobs")
+        
+        if not servers:
+            logger.error("[nats] No NATS servers configured")
+            return
+        
+        # Ensure servers is a list of strings
+        if isinstance(servers, str):
+            servers = [servers]
+        
+        logger.info(f"[nats] NATS batch thread started, servers: {servers}, subject: {subject}")
+        
+        nc = None
+        reconnect_delay = 5  # Start with 5 second delay
+        max_reconnect_delay = 60  # Max 60 second delay
+        
+        while not self._nats_stop_event.is_set():
+            try:
+                # Connect to NATS
+                if nc is None:
+                    logger.info(f"[nats] Connecting to NATS servers: {servers}")
+                    nc = await nats.connect(servers, connect_timeout=5, reconnect_time_wait=1, max_reconnect_attempts=100)
+                    logger.info(f"[nats] ✅ Connected to NATS")
+                    reconnect_delay = 5  # Reset reconnect delay on successful connection
+                
+                # Wait 10 seconds (checking stop event periodically)
+                for _ in range(10):
+                    if self._nats_stop_event.is_set():
+                        break
+                    await asyncio.sleep(1)
+                
+                if self._nats_stop_event.is_set():
+                    break
+                
+                with self._nats_lock:
+                    if not self._nats_buffer:
+                        continue
+                    
+                    jobs_to_send = self._nats_buffer.copy()
+                    self._nats_buffer.clear()
+                
+                # Publish batch
+                try:
+                    payload = {
+                        "event": "new_jobs_batch",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "count": len(jobs_to_send),
+                        "jobs": [
+                            {
+                                "id": j.id,
+                                "title": j.title,
+                                "company": j.company,
+                                "location": j.location,
+                                "department": j.department,
+                                "url": j.url,
+                                "posted_at": j.posted_at,
+                                "remote": j.remote,
+                                "salary": j.salary,
+                                "description": format_for_webhook(j.description),
+                            }
+                            for j in jobs_to_send
+                        ],
+                    }
+                    
+                    await nc.publish(subject, json.dumps(payload).encode())
+                    logger.info(f"[nats] ✅ Published batch of {len(jobs_to_send)} jobs to '{subject}'")
+                
+                except Exception as e:
+                    logger.error(f"[nats] Failed to publish batch: {e}", exc_info=True)
+                    nc = None  # Force reconnection on publish failure
+            
+            except Exception as e:
+                logger.error(f"[nats] Connection error: {e}", exc_info=True)
+                nc = None
+                
+                # Exponential backoff for reconnection
+                if self._nats_stop_event.wait(reconnect_delay):
+                    break  # Stop event was set
+                
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+                logger.debug(f"[nats] Retrying connection in {reconnect_delay}s...")
+        
+        # Cleanup
+        if nc:
+            try:
+                await nc.close()
+                logger.debug("[nats] Connection closed")
+            except Exception as e:
+                logger.debug(f"[nats] Error closing connection: {e}")
+
+    def stop(self):
+        """Stop background threads."""
+        self._nats_stop_event.set()
+        if self._nats_batch_thread:
+            self._nats_batch_thread.join(timeout=5)

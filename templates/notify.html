@@ -48,6 +48,17 @@
                 <span style="display: none;"></span>
             </label>
         </div>
+
+        <!-- NATS Channel -->
+        <div style="padding: 16px 18px; background: var(--surface-strong); border: 1px solid var(--border); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; min-height: 60px;">
+            <label style="display: flex; align-items: center; gap: 12px; flex: 1; cursor: pointer; user-select: none;">
+                <span style="font-size: 0.95rem; font-weight: 500; color: var(--text);">NATS Streaming</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0; cursor: pointer; user-select: none; flex-shrink: 0;">
+                <input type="checkbox" id="channel-nats" style="appearance: none; -webkit-appearance: none; -moz-appearance: none; width: 52px; height: 28px; border-radius: 14px; background: #d0dae8; outline: none; cursor: pointer; transition: background 0.3s ease; border: none; flex-shrink: 0; padding: 0; margin: 0; overflow: hidden;" />
+                <span style="display: none;"></span>
+            </label>
+        </div>
     </div>
 </div>
 
@@ -540,7 +551,8 @@ document.addEventListener("DOMContentLoaded", function() {
         return {
             console: localStorage.getItem("notify_channel_console") === "true",
             telegram: localStorage.getItem("notify_channel_telegram") === "true",
-            webhook: localStorage.getItem("notify_channel_webhook") === "true"
+            webhook: localStorage.getItem("notify_channel_webhook") === "true",
+            nats: localStorage.getItem("notify_channel_nats") === "true"
         };
     }
 
@@ -552,6 +564,7 @@ document.addEventListener("DOMContentLoaded", function() {
                 document.getElementById("channel-console").checked = data.channels.console;
                 document.getElementById("channel-telegram").checked = data.channels.telegram;
                 document.getElementById("channel-webhook").checked = data.channels.webhook;
+                document.getElementById("channel-nats").checked = data.channels.nats;
             }
         })
         .catch(error => console.error("Failed to load notification channels:", error));
@@ -580,7 +593,7 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     // Channel toggle listeners
-    ["console", "telegram", "webhook"].forEach(channel => {
+    ["console", "telegram", "webhook", "nats"].forEach(channel => {
         const toggle = document.getElementById("channel-" + channel);
         if (toggle) {
             toggle.addEventListener("change", function() {

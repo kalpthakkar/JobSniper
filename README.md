@@ -203,6 +203,83 @@ python main.py --list                 List all companies
 
 ---
 
+## 🌐 Distributed Setup (Multiple Machines)
+
+For high-volume monitoring, split companies across multiple machines using NATS messaging.
+
+### Architecture
+
+```
+Worker Machines (job_sniper) → NATS Server → Aggregator Machine (JobAggregator)
+```
+
+### 1. Start NATS Server
+
+```bash
+# Install NATS server
+go install github.com/nats-io/nats-server/v2@latest
+
+# Start server (accessible on LAN)
+nats-server -a 192.168.1.100  # Replace with your LAN IP
+```
+
+### 2. Configure Workers
+
+Update `config.yaml` on each worker machine:
+
+```yaml
+system:
+  notify_channels:
+    - nats  # Enable NATS publishing instead of direct notifications
+  nats:
+    servers: ["nats://192.168.1.100:4222"]  # Point to NATS server
+    subject: "job_sniper.jobs"
+```
+
+Use `--token-start` and `--token-stop` to split companies:
+
+```bash
+# Worker 1: First 50 companies
+python main.py --token-start 0 --token-stop 49
+
+# Worker 2: Next 50 companies  
+python main.py --token-start 50 --token-stop 99
+
+# Worker 3: Remaining companies
+python main.py --token-start 100
+```
+
+### 3. Start Aggregator
+
+On the aggregator machine:
+
+```bash
+cd JobAggregator
+pip install -r requirements.txt
+python aggregator.py
+```
+
+### 4. API Access
+
+The aggregator provides REST endpoints:
+
+```bash
+# Get highest-priority job
+curl http://localhost:5001/best-job
+
+# Get queue statistics  
+curl http://localhost:5001/queue-stats
+```
+
+### Job Scoring
+
+Jobs are prioritized by:
+- **ATS Score**: Greenhouse (10), Lever (9), Ashby (8), Workday (7), Workable (6)
+- **Recency**: Exponential decay (half-life ~1 day)
+- **Priority Queue**: Top jobs maintained for instant access
+
+---
+
 ## ⚠️ Legal & Ethical Notes
 
 - Only hits **public, unauthenticated** ATS endpoints — these are designed to be read
